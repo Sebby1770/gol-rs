@@ -1,0 +1,21 @@
+[package]
+name = "gol-rs"
+version = "0.1.0"
+edition = "2024"
+description = "Conway's Game of Life in your terminal"
+license = "MIT"
+repository = "https://github.com/Sebby1770/gol-rs"
+readme = "README.md"
+keywords = ["cli", "game-of-life", "cellular-automata", "terminal"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "gol"
+path = "src/main.rs"
+
+[dependencies]
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1
