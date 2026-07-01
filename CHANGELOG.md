@@ -1,0 +1,65 @@
+# Changelog
+
+All notable changes to gol-rs are documented here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
+adheres to [Semantic Versioning](https://semver.org/).
+
+## [0.2.0] — 2026-07-02
+
+The "off the terminal and onto the network" release. gol-rs is now a small
+systems project: one shared engine driving a CLI, a streaming server, and a
+benchmark, with real CI/CD and container/orchestration scaffolding.
+
+### Added
+- **Library crate** (`src/lib.rs`): the engine (grid, RNG, patterns, `step`,
+  `pack`, `bench`) is now reusable by every front-end and unit-tested directly.
+- **`gol serve`** — a zero-dependency HTTP + WebSocket server that streams a
+  shared simulation to any number of browser clients:
+  - **WebSocket** endpoint `/ws` with an RFC 6455 handshake and framing
+    implemented from scratch (`src/wire.rs`: hand-rolled SHA-1 + base64).
+  - **Server-Sent Events** at `/api/stream` (long-polling / streaming fallback).
+  - **Short-poll** JSON snapshot at `/api/state`.
+  - **RPC** control channel: `pause` / `resume` / `faster` / `slower` / `reseed`
+    (and pattern names) sent as WebSocket text frames.
+  - **`/healthz` + `/readyz`** liveness/readiness probes.
+  - **`/metrics`** Prometheus-format counters (requests, connections, frames,
+    generations, rate-limited, uptime).
+  - **Per-IP token-bucket rate limiting** (returns `429`).
+  - **Structured JSON-lines logging** to stderr.
+- **`gol bench`** — headless throughput benchmark reporting generations/sec and
+  millions of cell-updates/sec.
+- **Browser client** (`web/index.html`) — canvas renderer with a live
+  transport switch (WebSocket / SSE / short poll) and control buttons.
+- **CI** (`.github/workflows/ci.yml`): rustfmt, clippy `-D warnings`, tests, and
+  release builds across Ubuntu, macOS and Windows.
+- **Release automation** (`.github/workflows/release.yml`): tagged builds attach
+  per-platform binaries to the GitHub release.
+- **Containers**: multi-stage `Dockerfile` (distroless runtime) and a
+  `docker-compose.yml` that runs two replicas behind an nginx load balancer.
+- **Kubernetes** manifests (`deploy/k8s/gol.yaml`): Deployment, LoadBalancer
+  Service, HorizontalPodAutoscaler, and a NetworkPolicy.
+- **AWS serverless roadmap** (`deploy/aws/README.md`) with an illustrative
+  `gol_step` Lambda that reuses the shared engine.
+- **`ARCHITECTURE.md`** mapping every backend concept to where it lives, and
+  **`CONTRIBUTING.md`** documenting the branch/PR/cherry-pick workflow.
+- New unit tests for the bitset packing and the wire primitives (SHA-1, base64,
+  WebSocket accept key and frame parsing — all against published test vectors).
+
+### Changed
+- Split the former single `src/main.rs` into `lib.rs` + `main.rs`; the terminal
+  animation is unchanged and remains the default `gol` invocation.
+- Bumped edition-2024 compatibility (renamed the reserved `gen` identifier).
+- README rewritten around the three run modes.
+
+### Notes
+- The crate is still **dependency-free** — the entire network stack is std-only.
+
+## [0.1.0] — 2026-05-06
+
+### Added
+- Initial release: Conway's Game of Life in the terminal, toroidal grid,
+  `random` / `glider` / `pulsar` / `gosper` patterns, deterministic seeding,
+  ANSI renderer, Makefile, install script, and unit tests.
+
+[0.2.0]: https://github.com/Sebby1770/gol-rs/releases/tag/v0.2.0
+[0.1.0]: https://github.com/Sebby1770/gol-rs/releases/tag/v0.1.0
