@@ -27,6 +27,12 @@
   .pill { font-size:11px; color:var(--dim); }
   .pill.live { color: var(--accent); }
   code { color:#8aa0d8; }
+  .ops { margin-top:22px; border:1px solid #1c2233; border-radius:8px; background:var(--panel); padding:14px 16px; }
+  .ops h2 { margin:0 0 10px; font-size:13px; letter-spacing:1px; color:var(--dim); text-transform:uppercase; }
+  .ops-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(120px, 1fr)); gap:12px; }
+  .ops-grid .tile b { display:block; font-size:18px; color:var(--fg); font-variant-numeric:tabular-nums; }
+  .ops-grid .tile span { font-size:11px; color:var(--dim); }
+  .ops-grid .tile b.hot { color:var(--accent); }
 </style>
 </head>
 <body>
@@ -58,11 +64,24 @@
       <option value="poll">short poll</option>
     </select>
   </div>
+  <section class="ops">
+    <h2>Server ops — live from <code>/metrics</code></h2>
+    <div class="ops-grid">
+      <div class="tile"><b id="m-gps">–</b><span>generations/sec (throughput)</span></div>
+      <div class="tile"><b id="m-qps">–</b><span>HTTP req/sec (QPS)</span></div>
+      <div class="tile"><b id="m-fps-srv">–</b><span>frames pushed/sec</span></div>
+      <div class="tile"><b id="m-active">–</b><span>active connections</span></div>
+      <div class="tile"><b id="m-ws">–</b><span>ws upgrades total</span></div>
+      <div class="tile"><b id="m-429">–</b><span>rate limited (429)</span></div>
+      <div class="tile"><b id="m-uptime">–</b><span>uptime</span></div>
+    </div>
+  </section>
   <p class="sub" style="margin-top:16px">
     Transport is switchable so you can watch the same world over
     <code>/ws</code>, <code>/api/stream</code> (SSE) or repeated <code>/api/state</code> (short polling).
     Buttons send control commands back over the socket — that's the RPC channel.
-    Metrics live at <code>/metrics</code>.
+    The panel above polls the Prometheus counters at <code>/metrics</code> and
+    computes rates from the deltas.
   </p>
 </main>
 <script>
@@ -153,6 +172,52 @@ function send(cmd) {
 document.querySelectorAll('button[data-cmd]').forEach(b =>
   b.addEventListener('click', () => send(b.dataset.cmd)));
 el('transport').addEventListener('change', e => connect(e.target.value));
+
+// ---- server ops panel: poll the Prometheus counters, compute rates ----
+const OPS_POLL_MS = 2000;
+let prevMetrics = null;
+
+function parsePrometheus(text) {
+  const out = {};
+  for (const line of text.split('\n')) {
+    if (!line || line.startsWith('#')) continue;
+    const sp = line.lastIndexOf(' ');
+    if (sp > 0) out[line.slice(0, sp)] = parseFloat(line.slice(sp + 1));
+  }
+  return out;
+}
+
+function fmtUptime(sec) {
+  if (sec < 90) return Math.round(sec) + 's';
+  if (sec < 5400) return Math.round(sec / 60) + 'm';
+  return (sec / 3600).toFixed(1) + 'h';
+}
+
+async function pollOps() {
+  try {
+    const m = parsePrometheus(await (await fetch('/metrics')).text());
+    const rate = (key) => {
+      if (!prevMetrics || !(key in prevMetrics)) return null;
+      return Math.max(0, (m[key] - prevMetrics[key]) / (OPS_POLL_MS / 1000));
+    };
+    const gps = rate('gol_generations_total');
+    const qps = rate('gol_http_requests_total');
+    const fps = rate('gol_frames_sent_total');
+    el('m-gps').textContent = gps === null ? '–' : gps.toFixed(1);
+    el('m-qps').textContent = qps === null ? '–' : qps.toFixed(2);
+    el('m-fps-srv').textContent = fps === null ? '–' : fps.toFixed(1);
+    el('m-active').textContent = m.gol_active_connections ?? '–';
+    el('m-ws').textContent = m.gol_ws_connections_total ?? '–';
+    el('m-429').textContent = m.gol_rate_limited_total ?? '–';
+    el('m-uptime').textContent = 'gol_uptime_seconds' in m ? fmtUptime(m.gol_uptime_seconds) : '–';
+    el('m-gps').classList.toggle('hot', gps !== null && gps > 0);
+    prevMetrics = m;
+  } catch {
+    // server unreachable; leave the last values on screen
+  }
+}
+pollOps();
+setInterval(pollOps, OPS_POLL_MS);
 
 connect('ws');
 </script>

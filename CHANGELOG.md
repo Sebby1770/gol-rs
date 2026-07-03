@@ -4,6 +4,18 @@ All notable changes to gol-rs are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.1] — 2026-07-04
+
+### Added
+- **Live "server ops" panel in the web client.** The page now polls the
+  Prometheus counters at `/metrics` every 2s and renders the backend's vitals
+  right under the board: **generations/sec (throughput)**, **HTTP req/sec
+  (QPS)**, frames pushed/sec, active connections, total WebSocket upgrades,
+  **rate-limited (429) count**, and uptime — rates computed client-side from
+  counter deltas. Verified against a live server: the panel's parser reads all
+  exported metrics and its computed throughput matched the configured tick
+  rate (23.5 gens/sec at a 40ms delay).
+
 ## [0.3.0] — 2026-07-03
 
 ### Performance
