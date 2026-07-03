@@ -198,6 +198,11 @@ pub fn serve(cfg: ServerConfig) -> std::io::Result<()> {
 fn allow(shared: &Shared, ip: IpAddr) -> bool {
     let mut buckets = shared.buckets.lock().unwrap();
     let now = Instant::now();
+    // Evict buckets idle for over a minute once the map grows, so a churn of
+    // distinct client IPs can't grow it without bound.
+    if buckets.len() > 1024 {
+        buckets.retain(|_, (_, seen)| now.duration_since(*seen) < Duration::from_secs(60));
+    }
     let entry = buckets.entry(ip).or_insert((shared.rate_burst, now));
     let elapsed = now.duration_since(entry.1).as_secs_f64();
     entry.1 = now;

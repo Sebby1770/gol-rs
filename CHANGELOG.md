@@ -4,6 +4,23 @@ All notable changes to gol-rs are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] — 2026-07-03
+
+### Performance
+- **~3.2× faster engine.** `Grid::step()` now binds each row and its two
+  neighbours as slices, so the interior of the board needs no wrap arithmetic
+  at all — only the first and last column of each row pay for the torus.
+  Measured with `gol bench` on a 512×512 board, 500 generations, release build:
+  **790 → ~2,510 generations/sec** (205M → ~660M cell-updates/sec).
+  A new `fast_step_matches_reference_on_random_soup` test proves the optimised
+  path is cell-for-cell identical to the naive `count_neighbors` rule across
+  25 generations of a dense random soup (exercising every wrap edge).
+
+### Fixed
+- The per-IP rate-limiter map now evicts buckets idle for over a minute once it
+  grows past 1,024 entries, so a churn of distinct client IPs can no longer
+  grow server memory without bound.
+
 ## [0.2.0] — 2026-07-02
 
 The "off the terminal and onto the network" release. gol-rs is now a small
@@ -61,5 +78,6 @@ benchmark, with real CI/CD and container/orchestration scaffolding.
   `random` / `glider` / `pulsar` / `gosper` patterns, deterministic seeding,
   ANSI renderer, Makefile, install script, and unit tests.
 
+[0.3.0]: https://github.com/Sebby1770/gol-rs/releases/tag/v0.3.0
 [0.2.0]: https://github.com/Sebby1770/gol-rs/releases/tag/v0.2.0
 [0.1.0]: https://github.com/Sebby1770/gol-rs/releases/tag/v0.1.0

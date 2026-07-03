@@ -96,14 +96,72 @@ impl Grid {
     }
 
     /// Advance the board by one generation (B3/S23).
+    ///
+    /// The hot loop binds each row and its two neighbours as slices, so the
+    /// interior needs no wrap arithmetic at all — only the first and last
+    /// column of each row pay for the torus. On a 512×512 board this is
+    /// several times faster than the naive modulo-per-neighbour version
+    /// (measure it yourself with `gol bench`).
     pub fn step(&mut self) {
-        for y in 0..self.h {
-            for x in 0..self.w {
-                let n = self.count_neighbors(x, y);
-                let i = self.idx(x, y);
-                let alive = self.cells[i];
-                self.next[i] = matches!((alive, n), (true, 2) | (true, 3) | (false, 3));
+        let (w, h) = (self.w, self.h);
+
+        // Degenerate boards (a wrap index would collide with the cell itself)
+        // keep the straightforward reference path.
+        if w < 3 || h < 3 {
+            for y in 0..h {
+                for x in 0..w {
+                    let n = self.count_neighbors(x, y);
+                    let i = self.idx(x, y);
+                    let alive = self.cells[i];
+                    self.next[i] = n == 3 || (alive && n == 2);
+                }
             }
+            std::mem::swap(&mut self.cells, &mut self.next);
+            return;
+        }
+
+        for y in 0..h {
+            let up = if y == 0 { h - 1 } else { y - 1 };
+            let down = if y + 1 == h { 0 } else { y + 1 };
+            let top = &self.cells[up * w..up * w + w];
+            let mid = &self.cells[y * w..y * w + w];
+            let bot = &self.cells[down * w..down * w + w];
+            let out = &mut self.next[y * w..y * w + w];
+
+            // First column wraps to the last.
+            let n = top[w - 1] as u8
+                + top[0] as u8
+                + top[1] as u8
+                + mid[w - 1] as u8
+                + mid[1] as u8
+                + bot[w - 1] as u8
+                + bot[0] as u8
+                + bot[1] as u8;
+            out[0] = n == 3 || (mid[0] && n == 2);
+
+            // Interior: straight slice indexing, no wrapping, no modulo.
+            for x in 1..w - 1 {
+                let n = top[x - 1] as u8
+                    + top[x] as u8
+                    + top[x + 1] as u8
+                    + mid[x - 1] as u8
+                    + mid[x + 1] as u8
+                    + bot[x - 1] as u8
+                    + bot[x] as u8
+                    + bot[x + 1] as u8;
+                out[x] = n == 3 || (mid[x] && n == 2);
+            }
+
+            // Last column wraps to the first.
+            let n = top[w - 2] as u8
+                + top[w - 1] as u8
+                + top[0] as u8
+                + mid[w - 2] as u8
+                + mid[0] as u8
+                + bot[w - 2] as u8
+                + bot[w - 1] as u8
+                + bot[0] as u8;
+            out[w - 1] = n == 3 || (mid[w - 1] && n == 2);
         }
         std::mem::swap(&mut self.cells, &mut self.next);
     }
@@ -307,6 +365,29 @@ mod tests {
         let mut b = Rng::new(42);
         for _ in 0..100 {
             assert_eq!(a.next_u64(), b.next_u64());
+        }
+    }
+
+    #[test]
+    fn fast_step_matches_reference_on_random_soup() {
+        // The optimised step() must be cell-for-cell identical to the naive
+        // count_neighbors rule across many generations of a dense random soup
+        // (which exercises every wrap edge and both rule branches).
+        let mut g = Grid::new(64, 48);
+        let mut rng = Rng::new(1234);
+        for c in g.cells.iter_mut() {
+            *c = rng.next_f64() < 0.35;
+        }
+        for _ in 0..25 {
+            let mut expected = vec![false; g.w * g.h];
+            for y in 0..g.h {
+                for x in 0..g.w {
+                    let n = g.count_neighbors(x, y);
+                    expected[y * g.w + x] = n == 3 || (g.get(x, y) && n == 2);
+                }
+            }
+            g.step();
+            assert_eq!(g.cells, expected);
         }
     }
 
