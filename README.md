@@ -1,54 +1,85 @@
 # gol-rs
 
-Conway's Game of Life in your terminal — written in Rust, with zero runtime dependencies.
+Conway's Game of Life in Rust — **in your terminal, in your browser, or on your servers.**
+One dependency-free engine, three ways to run it.
+
+[![CI](https://github.com/Sebby1770/gol-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/Sebby1770/gol-rs/actions/workflows/ci.yml)
+![Rust](https://img.shields.io/badge/rust-edition%202024-orange)
+![deps](https://img.shields.io/badge/dependencies-0-brightgreen)
+![license](https://img.shields.io/badge/license-MIT-blue)
 
 ```
 gol-rs  gen     0  pop   384  grid 60x30  (Ctrl-C to quit)
   ████  ██  ██████      ██  ████      ██████  ██  ████
   ██  ████      ██████  ██████      ██  ██████  ████
-  ...
 ```
 
-## Features
+## What's new in 0.2
 
-- Toroidal (wrap-around) grid, configurable size
-- Built-in patterns: `random`, `glider`, `pulsar`, `gosper` (Gosper glider gun)
-- Deterministic seeding for reproducible runs
-- Pure-stdlib: no external crates, builds in seconds
-- ANSI-coloured renderer with hidden cursor and a clean exit guard
+gol-rs grew from a terminal toy into a compact **systems** project — and it still
+has **zero third-party dependencies**. The HTTP + WebSocket server (SHA-1,
+base64, RFC 6455 framing) is all hand-rolled in `src/wire.rs`, so the whole thing
+builds offline with nothing but the standard library.
 
-## Build
+- 🖥️ **`gol`** — the original ANSI terminal animation (unchanged default).
+- 🌐 **`gol serve`** — stream one shared simulation to browsers over **WebSocket**,
+  with **SSE** and **short-poll** fallbacks, an **RPC** control channel,
+  **/healthz** + **/readyz** probes, **/metrics**, and **per-IP rate limiting**.
+- ⏱️ **`gol bench`** — measure raw **throughput** (generations/sec, cell-updates/sec).
 
-Requires a recent Rust toolchain (see [rustup.rs](https://rustup.rs)).
+See **[ARCHITECTURE.md](ARCHITECTURE.md)** for how each backend concept maps to
+real code, and **[CHANGELOG.md](CHANGELOG.md)** for the full 0.2 list.
+
+## Quick start
 
 ```sh
-make release        # builds target/release/gol
-make test           # runs the unit tests
-make demo           # builds and runs the Gosper glider gun
+# 1. Terminal animation
+cargo run --release -- --pattern gosper --width 80 --height 25 --delay 60
+
+# 2. Live in the browser  (then open http://127.0.0.1:8080)
+cargo run --release -- serve --pattern gosper
+
+# 3. Benchmark the engine
+cargo run --release -- bench --width 512 --height 512 --gens 1000
 ```
 
-## Install
+Or with the `Makefile`: `make release`, `make test`, `make demo`.
+
+## The web server
 
 ```sh
-./install.sh                          # installs to /usr/local/bin (uses sudo if needed)
-PREFIX=$HOME/.local ./install.sh      # user-local install
-./install.sh --uninstall              # remove
+gol serve --addr 0.0.0.0:8080 --pattern gosper --width 120 --height 60
 ```
 
-Or via `make`:
+| Endpoint | What it does | Concept |
+| --- | --- | --- |
+| `GET /` | Canvas client (switch transport live) | — |
+| `GET /ws` | Full-duplex WebSocket stream + control | **WebSockets, RPC** |
+| `GET /api/stream` | Server-Sent Events stream | **long polling** |
+| `GET /api/state` | One JSON snapshot of the board | **short polling** |
+| `GET /healthz`, `/readyz` | Liveness / readiness | **availability** |
+| `GET /metrics` | Prometheus counters | **QPS / throughput** |
+
+Frames go on the wire as a packed 1-bit-per-cell bitset (base64) — a 120×60 board
+is ~900 bytes, not 7 KB. The browser unpacks it straight onto a `<canvas>`.
+
+## Run it anywhere
 
 ```sh
-make install                          # PREFIX=/usr/local
-PREFIX=$HOME/.local make install
+docker compose up --build       # 2 replicas behind an nginx load balancer → :8080
+kubectl apply -f deploy/k8s/gol.yaml   # Deployment + Service + HPA + NetworkPolicy
 ```
 
-## Usage
+The [AWS serverless roadmap](deploy/aws/README.md) sketches a `gol_step` Lambda,
+S3 frame exports, an SQS render queue, a DynamoDB pattern registry and Kafka
+event fan-out — all reusing this same engine.
+
+## CLI reference
 
 ```sh
-gol                                                    # 60x30 random grid
-gol --pattern gosper --width 80 --height 25 --delay 60
-gol --pattern pulsar --gens 200
-gol --seed 42 --density 0.35
+gol [OPTIONS]                 # animate (default)
+gol serve [SERVE OPTIONS]     # stream over HTTP + WebSocket
+gol bench [BENCH OPTIONS]     # throughput benchmark
 gol --help
 ```
 
@@ -62,11 +93,20 @@ gol --help
 | `-p`, `--pattern NAME` | `random` | `random` \| `glider` \| `pulsar` \| `gosper` |
 | `--density F` | `0.25` | 0–1, for `random` |
 
-## Languages used
+For `serve`, add `-a/--addr HOST:PORT`.
 
-- **Rust** — the simulator and CLI
-- **Makefile** — build / test / install targets
-- **Shell** — POSIX install script
+## Install
+
+```sh
+./install.sh                          # /usr/local/bin (sudo if needed)
+PREFIX=$HOME/.local ./install.sh      # user-local
+make install
+```
+
+## Development
+
+`cargo test` runs the engine tests **and** the RFC test vectors for SHA-1,
+base64 and the WebSocket handshake. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

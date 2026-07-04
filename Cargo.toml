@@ -1,18 +1,25 @@
 [package]
 name = "gol-rs"
-version = "0.1.0"
+version = "0.4.0"
 edition = "2024"
-description = "Conway's Game of Life in your terminal"
+description = "Conway's Game of Life in your terminal — and streamed live over a hand-rolled WebSocket server"
 license = "MIT"
 repository = "https://github.com/Sebby1770/gol-rs"
 readme = "README.md"
-keywords = ["cli", "game-of-life", "cellular-automata", "terminal"]
-categories = ["command-line-utilities"]
+keywords = ["cli", "game-of-life", "cellular-automata", "terminal", "websocket"]
+categories = ["command-line-utilities", "simulation"]
+
+[lib]
+name = "gol_rs"
+path = "src/lib.rs"
 
 [[bin]]
 name = "gol"
 path = "src/main.rs"
 
+# Deliberately zero dependencies: the HTTP + WebSocket server (SHA-1, base64,
+# RFC 6455 framing) is all hand-rolled in src/wire.rs so the crate builds
+# offline with nothing but the standard library.
 [dependencies]
 
 [profile.release]

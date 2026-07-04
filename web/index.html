@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>gol-rs · live</title>
+<style>
+  :root { --bg:#0a0e14; --fg:#c8d3f5; --accent:#3ddc97; --dim:#5a6785; --panel:#111726; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+         background: var(--bg); color: var(--fg); display:flex; flex-direction:column;
+         min-height:100vh; align-items:center; }
+  header { width:100%; max-width:960px; padding:20px 16px 6px; }
+  h1 { margin:0; font-size:20px; letter-spacing:1px; }
+  h1 .accent { color: var(--accent); }
+  .sub { color: var(--dim); font-size:12px; margin-top:4px; }
+  main { width:100%; max-width:960px; padding:12px 16px 40px; }
+  canvas { width:100%; height:auto; image-rendering: pixelate; background:#05070c;
+           border:1px solid #1c2233; border-radius:8px; cursor:crosshair; touch-action:none; }
+  .stats { display:flex; gap:18px; flex-wrap:wrap; margin:12px 0; font-size:13px; }
+  .stats b { color: var(--accent); }
+  .controls { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
+  button, select { background: var(--panel); color: var(--fg); border:1px solid #263049;
+           border-radius:6px; padding:7px 12px; font-family:inherit; font-size:13px; cursor:pointer; }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  select { cursor:pointer; }
+  .pill { font-size:11px; color:var(--dim); }
+  .pill.live { color: var(--accent); }
+  code { color:#8aa0d8; }
+  .ops { margin-top:22px; border:1px solid #1c2233; border-radius:8px; background:var(--panel); padding:14px 16px; }
+  .ops h2 { margin:0 0 10px; font-size:13px; letter-spacing:1px; color:var(--dim); text-transform:uppercase; }
+  .ops-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(120px, 1fr)); gap:12px; }
+  .ops-grid .tile b { display:block; font-size:18px; color:var(--fg); font-variant-numeric:tabular-nums; }
+  .ops-grid .tile span { font-size:11px; color:var(--dim); }
+  .ops-grid .tile b.hot { color:var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="accent">gol</span>-rs · live</h1>
+  <div class="sub">One shared Conway simulation, streamed from a zero-dependency Rust server.
+    <b style="color:var(--accent)">Draw on the board</b> — click or drag to paint live cells; everyone watching sees them.</div>
+</header>
+<main>
+  <canvas id="c" width="80" height="40"></canvas>
+  <div class="stats">
+    <span>gen <b id="gen">0</b></span>
+    <span>pop <b id="pop">0</b></span>
+    <span>grid <b id="dim">–</b></span>
+    <span>fps <b id="fps">0</b></span>
+    <span class="pill" id="status">connecting…</span>
+  </div>
+  <div class="controls">
+    <button data-cmd="pause">⏸ pause</button>
+    <button data-cmd="resume">▶ resume</button>
+    <button data-cmd="slower">🐢 slower</button>
+    <button data-cmd="faster">🐇 faster</button>
+    <button data-cmd="reseed">🎲 reseed</button>
+    <button data-cmd="glider">glider</button>
+    <button data-cmd="pulsar">pulsar</button>
+    <button data-cmd="gosper">gosper</button>
+    <select id="transport" title="transport">
+      <option value="ws">WebSocket</option>
+      <option value="sse">SSE (long poll)</option>
+      <option value="poll">short poll</option>
+    </select>
+  </div>
+  <section class="ops">
+    <h2>Server ops — live from <code>/metrics</code></h2>
+    <div class="ops-grid">
+      <div class="tile"><b id="m-gps">–</b><span>generations/sec (throughput)</span></div>
+      <div class="tile"><b id="m-qps">–</b><span>HTTP req/sec (QPS)</span></div>
+      <div class="tile"><b id="m-fps-srv">–</b><span>frames pushed/sec</span></div>
+      <div class="tile"><b id="m-active">–</b><span>active connections</span></div>
+      <div class="tile"><b id="m-ws">–</b><span>ws upgrades total</span></div>
+      <div class="tile"><b id="m-429">–</b><span>rate limited (429)</span></div>
+      <div class="tile"><b id="m-uptime">–</b><span>uptime</span></div>
+    </div>
+  </section>
+  <p class="sub" style="margin-top:16px">
+    Transport is switchable so you can watch the same world over
+    <code>/ws</code>, <code>/api/stream</code> (SSE) or repeated <code>/api/state</code> (short polling).
+    Buttons send control commands back over the socket — that's the RPC channel.
+    The panel above polls the Prometheus counters at <code>/metrics</code> and
+    computes rates from the deltas.
+  </p>
+</main>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const el = id => document.getElementById(id);
+let ws = null, sse = null, pollTimer = null;
+let frames = 0, lastFpsAt = performance.now();
+
+function b64ToBytes(b64) {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function render(gen, w, h, pop, bits) {
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  const img = ctx.createImageData(w, h);
+  const bytes = b64ToBytes(bits);
+  for (let i = 0; i < w * h; i++) {
+    const alive = (bytes[i >> 3] >> (i & 7)) & 1;
+    const o = i * 4;
+    img.data[o] = alive ? 61 : 5;
+    img.data[o + 1] = alive ? 220 : 7;
+    img.data[o + 2] = alive ? 151 : 12;
+    img.data[o + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  el('gen').textContent = gen;
+  el('pop').textContent = pop;
+  el('dim').textContent = w + '×' + h;
+  frames++;
+  const now = performance.now();
+  if (now - lastFpsAt > 500) {
+    el('fps').textContent = Math.round((frames * 1000) / (now - lastFpsAt));
+    frames = 0; lastFpsAt = now;
+  }
+}
+
+function handlePayload(str) {
+  const [gen, w, h, pop, bits] = str.split('|');
+  render(+gen, +w, +h, +pop, bits);
+}
+
+function setStatus(text, live) {
+  const s = el('status');
+  s.textContent = text;
+  s.className = 'pill' + (live ? ' live' : '');
+}
+
+function teardown() {
+  if (ws) { ws.close(); ws = null; }
+  if (sse) { sse.close(); sse = null; }
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
+
+function connect(kind) {
+  teardown();
+  if (kind === 'ws') {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    ws = new WebSocket(`${proto}://${location.host}/ws`);
+    ws.onopen = () => setStatus('websocket live', true);
+    ws.onmessage = e => handlePayload(e.data);
+    ws.onclose = () => setStatus('websocket closed', false);
+  } else if (kind === 'sse') {
+    sse = new EventSource('/api/stream');
+    sse.onopen = () => setStatus('sse streaming', true);
+    sse.onmessage = e => handlePayload(e.data);
+    sse.onerror = () => setStatus('sse error', false);
+  } else {
+    setStatus('short polling', true);
+    pollTimer = setInterval(async () => {
+      try {
+        const r = await fetch('/api/state');
+        const j = await r.json();
+        render(j.gen, j.w, j.h, j.pop, j.bits);
+      } catch { setStatus('poll error', false); }
+    }, 100);
+  }
+}
+
+function send(cmd) {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(cmd);
+  else fetch('/api/state'); // non-ws transports are read-only; nudge a fetch
+}
+
+document.querySelectorAll('button[data-cmd]').forEach(b =>
+  b.addEventListener('click', () => send(b.dataset.cmd)));
+el('transport').addEventListener('change', e => connect(e.target.value));
+
+// ---- draw on the board: pointer events -> `cell x y` RPC over the socket ----
+// Painting mutates the one shared world, so every connected viewer sees it.
+let painting = false;
+let lastCell = null;
+
+function paintAt(e) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    setStatus('drawing needs the WebSocket transport', false);
+    return;
+  }
+  const rect = canvas.getBoundingClientRect();
+  const x = Math.floor(((e.clientX - rect.left) / rect.width) * canvas.width);
+  const y = Math.floor(((e.clientY - rect.top) / rect.height) * canvas.height);
+  if (x < 0 || y < 0 || x >= canvas.width || y >= canvas.height) return;
+  const key = x + ',' + y;
+  if (key === lastCell) return; // don't spam identical cells while dragging
+  lastCell = key;
+  ws.send(`cell ${x} ${y}`);
+}
+
+canvas.addEventListener('pointerdown', e => {
+  painting = true;
+  lastCell = null;
+  canvas.setPointerCapture(e.pointerId);
+  paintAt(e);
+});
+canvas.addEventListener('pointermove', e => { if (painting) paintAt(e); });
+window.addEventListener('pointerup', () => { painting = false; lastCell = null; });
+
+// ---- server ops panel: poll the Prometheus counters, compute rates ----
+const OPS_POLL_MS = 2000;
+let prevMetrics = null;
+
+function parsePrometheus(text) {
+  const out = {};
+  for (const line of text.split('\n')) {
+    if (!line || line.startsWith('#')) continue;
+    const sp = line.lastIndexOf(' ');
+    if (sp > 0) out[line.slice(0, sp)] = parseFloat(line.slice(sp + 1));
+  }
+  return out;
+}
+
+function fmtUptime(sec) {
+  if (sec < 90) return Math.round(sec) + 's';
+  if (sec < 5400) return Math.round(sec / 60) + 'm';
+  return (sec / 3600).toFixed(1) + 'h';
+}
+
+async function pollOps() {
+  try {
+    const m = parsePrometheus(await (await fetch('/metrics')).text());
+    const rate = (key) => {
+      if (!prevMetrics || !(key in prevMetrics)) return null;
+      return Math.max(0, (m[key] - prevMetrics[key]) / (OPS_POLL_MS / 1000));
+    };
+    const gps = rate('gol_generations_total');
+    const qps = rate('gol_http_requests_total');
+    const fps = rate('gol_frames_sent_total');
+    el('m-gps').textContent = gps === null ? '–' : gps.toFixed(1);
+    el('m-qps').textContent = qps === null ? '–' : qps.toFixed(2);
+    el('m-fps-srv').textContent = fps === null ? '–' : fps.toFixed(1);
+    el('m-active').textContent = m.gol_active_connections ?? '–';
+    el('m-ws').textContent = m.gol_ws_connections_total ?? '–';
+    el('m-429').textContent = m.gol_rate_limited_total ?? '–';
+    el('m-uptime').textContent = 'gol_uptime_seconds' in m ? fmtUptime(m.gol_uptime_seconds) : '–';
+    el('m-gps').classList.toggle('hot', gps !== null && gps > 0);
+    prevMetrics = m;
+  } catch {
+    // server unreachable; leave the last values on screen
+  }
+}
+pollOps();
+setInterval(pollOps, OPS_POLL_MS);
+
+connect('ws');
+</script>
+</body>
+</html>
