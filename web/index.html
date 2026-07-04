@@ -16,7 +16,7 @@
   .sub { color: var(--dim); font-size:12px; margin-top:4px; }
   main { width:100%; max-width:960px; padding:12px 16px 40px; }
   canvas { width:100%; height:auto; image-rendering: pixelate; background:#05070c;
-           border:1px solid #1c2233; border-radius:8px; }
+           border:1px solid #1c2233; border-radius:8px; cursor:crosshair; touch-action:none; }
   .stats { display:flex; gap:18px; flex-wrap:wrap; margin:12px 0; font-size:13px; }
   .stats b { color: var(--accent); }
   .controls { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
@@ -38,7 +38,8 @@
 <body>
 <header>
   <h1><span class="accent">gol</span>-rs · live</h1>
-  <div class="sub">One shared Conway simulation, streamed from a zero-dependency Rust server.</div>
+  <div class="sub">One shared Conway simulation, streamed from a zero-dependency Rust server.
+    <b style="color:var(--accent)">Draw on the board</b> — click or drag to paint live cells; everyone watching sees them.</div>
 </header>
 <main>
   <canvas id="c" width="80" height="40"></canvas>
@@ -172,6 +173,35 @@ function send(cmd) {
 document.querySelectorAll('button[data-cmd]').forEach(b =>
   b.addEventListener('click', () => send(b.dataset.cmd)));
 el('transport').addEventListener('change', e => connect(e.target.value));
+
+// ---- draw on the board: pointer events -> `cell x y` RPC over the socket ----
+// Painting mutates the one shared world, so every connected viewer sees it.
+let painting = false;
+let lastCell = null;
+
+function paintAt(e) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    setStatus('drawing needs the WebSocket transport', false);
+    return;
+  }
+  const rect = canvas.getBoundingClientRect();
+  const x = Math.floor(((e.clientX - rect.left) / rect.width) * canvas.width);
+  const y = Math.floor(((e.clientY - rect.top) / rect.height) * canvas.height);
+  if (x < 0 || y < 0 || x >= canvas.width || y >= canvas.height) return;
+  const key = x + ',' + y;
+  if (key === lastCell) return; // don't spam identical cells while dragging
+  lastCell = key;
+  ws.send(`cell ${x} ${y}`);
+}
+
+canvas.addEventListener('pointerdown', e => {
+  painting = true;
+  lastCell = null;
+  canvas.setPointerCapture(e.pointerId);
+  paintAt(e);
+});
+canvas.addEventListener('pointermove', e => { if (painting) paintAt(e); });
+window.addEventListener('pointerup', () => { painting = false; lastCell = null; });
 
 // ---- server ops panel: poll the Prometheus counters, compute rates ----
 const OPS_POLL_MS = 2000;

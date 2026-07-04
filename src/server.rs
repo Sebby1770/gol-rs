@@ -434,8 +434,28 @@ fn websocket(
     Ok(())
 }
 
+/// Parse a `cell X Y` paint command into coordinates.
+///
+/// Kept as a pure function so the wire syntax has unit tests; bounds checking
+/// happens in `Grid::set`, which ignores out-of-range writes.
+pub(crate) fn parse_cell_command(cmd: &str) -> Option<(usize, usize)> {
+    let rest = cmd.strip_prefix("cell ")?;
+    let mut parts = rest.split_whitespace();
+    let x = parts.next()?.parse().ok()?;
+    let y = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((x, y))
+}
+
 /// Apply a control command received over the WebSocket RPC channel.
 fn apply_command(shared: &Shared, cmd: &str) {
+    // `cell X Y` — paint a live cell into the shared world (browser drawing).
+    if let Some((x, y)) = parse_cell_command(cmd) {
+        shared.grid.lock().unwrap().set(x, y, true);
+        return;
+    }
     match cmd {
         "pause" => shared.paused.store(true, Ordering::Relaxed),
         "resume" => shared.paused.store(false, Ordering::Relaxed),
@@ -494,4 +514,25 @@ fn write_simple(
     );
     stream.write_all(response.as_bytes())?;
     stream.flush()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_cell_command;
+
+    #[test]
+    fn cell_command_parses_coordinates() {
+        assert_eq!(parse_cell_command("cell 3 7"), Some((3, 7)));
+        assert_eq!(parse_cell_command("cell 0 0"), Some((0, 0)));
+    }
+
+    #[test]
+    fn cell_command_rejects_malformed_input() {
+        assert_eq!(parse_cell_command("cell"), None);
+        assert_eq!(parse_cell_command("cell 3"), None);
+        assert_eq!(parse_cell_command("cell x y"), None);
+        assert_eq!(parse_cell_command("cell 3 7 9"), None);
+        assert_eq!(parse_cell_command("cell -1 2"), None); // negative -> not usize
+        assert_eq!(parse_cell_command("pause"), None);
+    }
 }

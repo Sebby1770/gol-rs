@@ -4,6 +4,20 @@ All notable changes to gol-rs are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] — 2026-07-04
+
+### Added
+- **Draw on the board.** Click or drag on the canvas to paint live cells; each
+  stroke is sent as a `cell X Y` RPC frame over the WebSocket into the one
+  shared world, so **every connected viewer sees what you draw**. Pointer
+  events support mouse and touch; dragging deduplicates repeat cells; painting
+  works while paused (sketch a pattern, then hit resume). The wire syntax is a
+  pure parser (`parse_cell_command`) with unit tests; out-of-bounds and
+  malformed input are ignored server-side.
+  Verified live: painted a blinker into an empty paused world over a raw
+  WebSocket, confirmed the exact bits via `/api/state`, resumed, and watched
+  it oscillate.
+
 ## [0.3.1] — 2026-07-04
 
 ### Added
