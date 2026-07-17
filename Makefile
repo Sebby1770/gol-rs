@@ -3,7 +3,7 @@ BINDIR  ?= $(PREFIX)/bin
 CARGO   ?= cargo
 TARGET  := target/release/gol
 
-.PHONY: all build release debug run test fmt clippy check clean install uninstall demo
+.PHONY: all build release debug run test fmt fmt-check clippy check package clean install uninstall demo headless-demo patterns
 
 all: release
 
@@ -24,11 +24,17 @@ test:
 fmt:
 	$(CARGO) fmt --all
 
-clippy:
-	$(CARGO) clippy --release -- -D warnings
+fmt-check:
+	$(CARGO) fmt --all -- --check
 
-check: fmt clippy test
+clippy:
+	$(CARGO) clippy --all-targets --all-features -- -D warnings
+
+check: fmt-check clippy test
 	@echo "all checks passed"
+
+package:
+	$(CARGO) package
 
 clean:
 	$(CARGO) clean
@@ -43,4 +49,10 @@ uninstall:
 	@echo "removed $(DESTDIR)$(BINDIR)/gol"
 
 demo: release
-	@$(TARGET) --pattern gosper --width 80 --height 25 --delay 60 --gens 400
+	@$(TARGET) --pattern gosper-glider-gun --width 80 --height 25 --delay 60 --gens 400
+
+headless-demo: release
+	@$(TARGET) --pattern blinker --width 9 --height 9 --headless --stop-on-cycle
+
+patterns: release
+	@$(TARGET) patterns

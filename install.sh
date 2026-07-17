@@ -33,7 +33,16 @@ EOF
 done
 
 SUDO=""
-if [ ! -w "$BINDIR" ] && [ "$(id -u)" -ne 0 ]; then
+WRITE_PROBE="$BINDIR"
+while [ ! -e "$WRITE_PROBE" ]; do
+    PARENT="$(dirname "$WRITE_PROBE")"
+    if [ "$PARENT" = "$WRITE_PROBE" ]; then
+        break
+    fi
+    WRITE_PROBE="$PARENT"
+done
+
+if { [ ! -d "$WRITE_PROBE" ] || [ ! -w "$WRITE_PROBE" ]; } && [ "$(id -u)" -ne 0 ]; then
     if command -v sudo >/dev/null 2>&1; then
         SUDO="sudo"
     else
