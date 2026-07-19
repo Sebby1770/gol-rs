@@ -44,3 +44,9 @@ uninstall:
 
 demo: release
 	@$(TARGET) --pattern gosper --width 80 --height 25 --delay 60 --gens 400
+
+demo-braille: release
+	@$(TARGET) --pattern gosper --width 80 --height 40 --style braille --delay 50 --gens 300
+
+demo-stable: release
+	@$(TARGET) --pattern block --until-stable --quiet --dump ascii

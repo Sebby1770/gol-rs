@@ -1,31 +1,54 @@
+mod grid;
+mod patterns;
+mod render;
+mod rng;
+
+use grid::{Grid, StepStats};
+use patterns::{dump_ascii, dump_rle, list_patterns, load_file, save_file, seed_pattern};
+use render::{render_frame, CursorGuard, RenderOpts, Style};
+use rng::Rng;
+
 use std::env;
-use std::io::{self, Write};
+use std::fs::File;
+use std::io::{self, BufWriter, Write};
+use std::path::PathBuf;
 use std::process;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const HELP: &str = "\
-gol — Conway's Game of Life in your terminal
+gol — Conway's Game of Life in your terminal (v0.2)
 
 USAGE:
     gol [OPTIONS]
 
 OPTIONS:
-    -W, --width N        grid width  (default: 60)
-    -H, --height N       grid height (default: 30)
-    -g, --gens N         number of generations to run (default: 500)
-    -d, --delay MS       delay between frames in ms (default: 80)
-    -s, --seed N         RNG seed for the random pattern (default: time-based)
-    -p, --pattern NAME   initial pattern: random | glider | pulsar | gosper
-                         (default: random)
-        --density F      density 0.0-1.0 for the random pattern (default: 0.25)
-    -h, --help           print this help
+    -W, --width N          grid width  (default: 60)
+    -H, --height N         grid height (default: 30)
+    -g, --gens N           max generations (default: 500)
+    -d, --delay MS         delay between frames in ms (default: 80)
+    -s, --seed N           RNG seed for random pattern (default: time-based)
+    -p, --pattern NAME     initial pattern (default: random)
+        --density F        density 0.0-1.0 for random (default: 0.25)
+        --list-patterns    list built-in patterns and exit
+        --load PATH        seed grid from RLE / Life 1.05 file
+        --save PATH        save final grid as RLE
+        --save-every N     also write RLE every N generations (with --save)
+        --dump [FMT]       print final pattern: rle (default) | ascii
+        --style MODE       block | braille | dots (default: block)
+        --until-stable     stop when grid equals previous generation
+        --quiet, --once    only print final stats (no animation)
+        --no-color         disable ANSI colours
+        --stats PATH       write gen,pop CSV history to PATH
+    -h, --help             print this help
 
 EXAMPLES:
     gol
     gol --pattern gosper --width 80 --height 30 --delay 60
-    gol --pattern pulsar --gens 200
-    gol --seed 42 --density 0.35
+    gol --pattern toad --until-stable --gens 100
+    gol --load gun.rle --style braille --gens 200
+    gol --pattern acorn --quiet --dump ascii --stats pop.csv
+    gol --list-patterns
 ";
 
 struct Config {
@@ -36,6 +59,16 @@ struct Config {
     seed: u64,
     pattern: String,
     density: f64,
+    load: Option<PathBuf>,
+    save: Option<PathBuf>,
+    save_every: Option<u64>,
+    dump: Option<String>,
+    style: Style,
+    until_stable: bool,
+    quiet: bool,
+    color: bool,
+    stats_path: Option<PathBuf>,
+    list_patterns: bool,
 }
 
 impl Default for Config {
@@ -52,6 +85,16 @@ impl Default for Config {
             seed,
             pattern: "random".into(),
             density: 0.25,
+            load: None,
+            save: None,
+            save_every: None,
+            dump: None,
+            style: Style::Block,
+            until_stable: false,
+            quiet: false,
+            color: true,
+            stats_path: None,
+            list_patterns: false,
         }
     }
 }
@@ -92,6 +135,31 @@ fn parse_args() -> Result<Config, String> {
                     .parse()
                     .map_err(|e| format!("--density: {e}"))?
             }
+            "--list-patterns" => cfg.list_patterns = true,
+            "--load" => cfg.load = Some(PathBuf::from(take(&mut i)?)),
+            "--save" => cfg.save = Some(PathBuf::from(take(&mut i)?)),
+            "--save-every" => {
+                cfg.save_every = Some(
+                    take(&mut i)?
+                        .parse()
+                        .map_err(|e| format!("--save-every: {e}"))?,
+                );
+            }
+            "--dump" => {
+                // optional format
+                let fmt = if i + 1 < argv.len() && !argv[i + 1].starts_with('-') {
+                    i += 1;
+                    argv[i].clone()
+                } else {
+                    "rle".into()
+                };
+                cfg.dump = Some(fmt);
+            }
+            "--style" => cfg.style = Style::parse(&take(&mut i)?)?,
+            "--until-stable" => cfg.until_stable = true,
+            "--quiet" | "--once" => cfg.quiet = true,
+            "--no-color" => cfg.color = false,
+            "--stats" => cfg.stats_path = Some(PathBuf::from(take(&mut i)?)),
             "-h" | "--help" => {
                 print!("{HELP}");
                 process::exit(0);
@@ -100,207 +168,196 @@ fn parse_args() -> Result<Config, String> {
         }
         i += 1;
     }
+    if cfg.list_patterns {
+        return Ok(cfg);
+    }
     if cfg.w < 4 || cfg.h < 4 {
         return Err("grid too small (min 4x4)".into());
     }
     if !(0.0..=1.0).contains(&cfg.density) {
         return Err("density must be between 0.0 and 1.0".into());
     }
+    if let Some(n) = cfg.save_every {
+        if n == 0 {
+            return Err("--save-every must be >= 1".into());
+        }
+        if cfg.save.is_none() {
+            return Err("--save-every requires --save PATH".into());
+        }
+    }
+    if let Some(ref fmt) = cfg.dump {
+        let f = fmt.to_ascii_lowercase();
+        if f != "rle" && f != "ascii" {
+            return Err("--dump format must be rle or ascii".into());
+        }
+    }
     Ok(cfg)
 }
 
-struct Rng(u64);
+fn write_stats_header(f: &mut File) -> io::Result<()> {
+    writeln!(f, "gen,pop")
+}
 
-impl Rng {
-    fn new(seed: u64) -> Self {
-        Self(if seed == 0 {
-            0xDEAD_BEEF_CAFE_BABE
+fn append_stats(f: &mut File, gen: u64, pop: usize) -> io::Result<()> {
+    writeln!(f, "{gen},{pop}")
+}
+
+fn save_snapshot(grid: &Grid, base: &PathBuf, gen: u64) -> Result<(), String> {
+    let path = if gen == u64::MAX {
+        base.clone()
+    } else {
+        // insert gen before extension: name-genN.rle
+        let stem = base
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("pattern");
+        let ext = base
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("rle");
+        let parent = base.parent().unwrap_or_else(|| std::path::Path::new("."));
+        parent.join(format!("{stem}-gen{gen}.{ext}"))
+    };
+    save_file(grid, &path)
+}
+
+fn run(cfg: Config) -> Result<(), String> {
+    if cfg.list_patterns {
+        list_patterns();
+        return Ok(());
+    }
+
+    let mut grid = Grid::new(cfg.w, cfg.h);
+    let mut rng = Rng::new(cfg.seed);
+
+    if let Some(ref path) = cfg.load {
+        load_file(&mut grid, path)?;
+    } else {
+        seed_pattern(&mut grid, &cfg.pattern, &mut rng, cfg.density)?;
+    }
+
+    let mut stats_file = if let Some(ref p) = cfg.stats_path {
+        let mut f = File::create(p).map_err(|e| format!("stats file: {e}"))?;
+        write_stats_header(&mut f).map_err(|e| format!("stats file: {e}"))?;
+        Some(f)
+    } else {
+        None
+    };
+
+    let animate = !cfg.quiet;
+    let _cursor = CursorGuard::new(animate);
+    let stdout = io::stdout();
+    let mut out = BufWriter::new(stdout.lock());
+
+    if animate {
+        let _ = out.write_all(b"\x1b[?25l\x1b[2J\x1b[H");
+    }
+
+    let ropts = RenderOpts {
+        style: cfg.style,
+        color: cfg.color && animate,
+        show_stats: true,
+    };
+
+    let mut last_stats: Option<StepStats> = None;
+    let mut generation: u64 = 0;
+    let mut stopped_stable = false;
+
+    // Record gen 0
+    if let Some(ref mut f) = stats_file {
+        append_stats(f, 0, grid.population()).map_err(|e| format!("stats: {e}"))?;
+    }
+
+    while generation < cfg.gens {
+        if animate {
+            if render_frame(&grid, generation, last_stats, &ropts, &mut out).is_err() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(cfg.delay_ms));
+        }
+
+        // Check stable before stepping past last requested gen: we step after display.
+        if generation + 1 >= cfg.gens && !cfg.until_stable {
+            // Will exit after this display on next loop check — but we still want to step?
+            // Original: for gen in 0..gens { render; sleep; step } — so gens steps after gens frames.
+            // Keep same: render current, then step, until we've shown `gens` frames... 
+            // Actually original runs gens iterations of render+step, ending after last step
+            // without showing final. We keep: show generation, step, increment.
+        }
+
+        let prev = if cfg.until_stable {
+            Some(grid.clone())
         } else {
-            seed
-        })
-    }
-    fn next_u64(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.0 = x;
-        x
-    }
-    fn next_f64(&mut self) -> f64 {
-        (self.next_u64() >> 11) as f64 / ((1u64 << 53) as f64)
-    }
-}
+            None
+        };
 
-struct Grid {
-    w: usize,
-    h: usize,
-    cells: Vec<bool>,
-    next: Vec<bool>,
-}
+        let stats = grid.step();
+        last_stats = Some(stats);
+        generation += 1;
 
-impl Grid {
-    fn new(w: usize, h: usize) -> Self {
-        Self {
-            w,
-            h,
-            cells: vec![false; w * h],
-            next: vec![false; w * h],
+        if let Some(ref mut f) = stats_file {
+            append_stats(f, generation, grid.population()).map_err(|e| format!("stats: {e}"))?;
         }
-    }
 
-    #[inline]
-    fn idx(&self, x: usize, y: usize) -> usize {
-        y * self.w + x
-    }
-
-    fn set(&mut self, x: usize, y: usize, v: bool) {
-        if x < self.w && y < self.h {
-            let i = self.idx(x, y);
-            self.cells[i] = v;
-        }
-    }
-
-    fn count_neighbors(&self, x: usize, y: usize) -> u8 {
-        let mut n = 0u8;
-        let xoffsets = [self.w - 1, 0, 1];
-        let yoffsets = [self.h - 1, 0, 1];
-        for &dy in &yoffsets {
-            for &dx in &xoffsets {
-                if dx == 0 && dy == 0 {
-                    continue;
-                }
-                let nx = (x + dx) % self.w;
-                let ny = (y + dy) % self.h;
-                if self.cells[self.idx(nx, ny)] {
-                    n += 1;
-                }
+        if let (Some(ref base), Some(every)) = (&cfg.save, cfg.save_every) {
+            if generation % every == 0 {
+                save_snapshot(&grid, base, generation)?;
             }
         }
-        n
-    }
 
-    fn step(&mut self) {
-        for y in 0..self.h {
-            for x in 0..self.w {
-                let n = self.count_neighbors(x, y);
-                let i = self.idx(x, y);
-                let alive = self.cells[i];
-                self.next[i] = matches!((alive, n), (true, 2) | (true, 3) | (false, 3));
+        if let Some(ref p) = prev {
+            if grid.equals(p) {
+                stopped_stable = true;
+                break;
             }
         }
-        std::mem::swap(&mut self.cells, &mut self.next);
-    }
 
-    fn population(&self) -> usize {
-        self.cells.iter().filter(|c| **c).count()
-    }
-
-    fn render<W: Write>(&self, generation: u64, out: &mut W) -> io::Result<()> {
-        out.write_all(b"\x1b[H")?;
-        write!(
-            out,
-            "\x1b[1;36mgol-rs\x1b[0m  gen \x1b[33m{:>5}\x1b[0m  pop \x1b[35m{:>5}\x1b[0m  grid \x1b[33m{}x{}\x1b[0m  (Ctrl-C to quit)\x1b[K\n",
-            generation,
-            self.population(),
-            self.w,
-            self.h
-        )?;
-        for y in 0..self.h {
-            let mut run_alive = false;
-            for x in 0..self.w {
-                let alive = self.cells[self.idx(x, y)];
-                if alive && !run_alive {
-                    out.write_all(b"\x1b[32m")?;
-                    run_alive = true;
-                } else if !alive && run_alive {
-                    out.write_all(b"\x1b[0m")?;
-                    run_alive = false;
-                }
-                out.write_all(if alive { "██".as_bytes() } else { b"  " })?;
-            }
-            if run_alive {
-                out.write_all(b"\x1b[0m")?;
-            }
-            out.write_all(b"\x1b[K\n")?;
-        }
-        out.flush()
-    }
-}
-
-struct CursorGuard;
-
-impl Drop for CursorGuard {
-    fn drop(&mut self) {
-        let mut stdout = io::stdout();
-        let _ = stdout.write_all(b"\x1b[?25h\x1b[0m\n");
-        let _ = stdout.flush();
-    }
-}
-
-fn place_glider(g: &mut Grid, ox: usize, oy: usize) {
-    for &(dx, dy) in &[(1, 0), (2, 1), (0, 2), (1, 2), (2, 2)] {
-        g.set(ox + dx, oy + dy, true);
-    }
-}
-
-fn place_from_str(g: &mut Grid, ox: usize, oy: usize, art: &str) {
-    for (dy, line) in art.lines().enumerate() {
-        for (dx, c) in line.chars().enumerate() {
-            if matches!(c, 'o' | 'O' | '#' | '*') {
-                g.set(ox + dx, oy + dy, true);
-            }
+        if generation >= cfg.gens {
+            break;
         }
     }
-}
 
-const PULSAR: &str = "\
-..ooo...ooo..
-.............
-o....o.o....o
-o....o.o....o
-o....o.o....o
-..ooo...ooo..
-.............
-..ooo...ooo..
-o....o.o....o
-o....o.o....o
-o....o.o....o
-.............
-..ooo...ooo..";
-
-const GOSPER: &str = "\
-........................o...........
-......................o.o...........
-............oo......oo............oo
-...........o...o....oo............oo
-oo........o.....o...oo..............
-oo........o...o.oo....o.o...........
-..........o.....o.......o...........
-...........o...o....................
-............oo......................";
-
-fn seed_pattern(grid: &mut Grid, name: &str, rng: &mut Rng, density: f64) -> Result<(), String> {
-    match name {
-        "random" => {
-            for c in grid.cells.iter_mut() {
-                *c = rng.next_f64() < density;
-            }
+    // Final frame / quiet summary
+    if animate {
+        let _ = render_frame(&grid, generation, last_stats, &ropts, &mut out);
+        let _ = out.flush();
+    } else {
+        let pop = grid.population();
+        let reason = if stopped_stable {
+            "stable"
+        } else {
+            "max-gens"
+        };
+        if cfg.color {
+            writeln!(
+                out,
+                "\x1b[1;36mgol-rs\x1b[0m  gen \x1b[33m{generation}\x1b[0m  pop \x1b[35m{pop}\x1b[0m  ({reason})"
+            )
+            .map_err(|e| e.to_string())?;
+        } else {
+            writeln!(out, "gol-rs  gen {generation}  pop {pop}  ({reason})")
+                .map_err(|e| e.to_string())?;
         }
-        "glider" => place_glider(grid, 1, 1),
-        "pulsar" => {
-            let ox = grid.w.saturating_sub(13) / 2;
-            let oy = grid.h.saturating_sub(13) / 2;
-            place_from_str(grid, ox, oy, PULSAR);
+        if let Some(s) = last_stats {
+            writeln!(out, "last step: +{}/-{}", s.births, s.deaths).map_err(|e| e.to_string())?;
         }
-        "gosper" => {
-            if grid.w < 40 || grid.h < 12 {
-                return Err("gosper needs at least a 40x12 grid".into());
-            }
-            place_from_str(grid, 1, 1, GOSPER);
-        }
-        other => return Err(format!("unknown pattern: {other}")),
+        let _ = out.flush();
     }
+
+    if let Some(ref path) = cfg.save {
+        save_file(&grid, path)?;
+        if !cfg.quiet {
+            eprintln!("saved RLE → {}", path.display());
+        }
+    }
+
+    if let Some(ref fmt) = cfg.dump {
+        match fmt.to_ascii_lowercase().as_str() {
+            "ascii" => print!("{}", dump_ascii(&grid)),
+            _ => print!("{}", dump_rle(&grid)),
+        }
+    }
+
     Ok(())
 }
 
@@ -313,82 +370,60 @@ fn main() {
         }
     };
 
-    let mut grid = Grid::new(cfg.w, cfg.h);
-    let mut rng = Rng::new(cfg.seed);
-    if let Err(e) = seed_pattern(&mut grid, &cfg.pattern, &mut rng, cfg.density) {
+    if let Err(e) = run(cfg) {
         eprintln!("error: {e}");
         process::exit(2);
-    }
-
-    let _cursor = CursorGuard;
-    let stdout = io::stdout();
-    let mut out = io::BufWriter::new(stdout.lock());
-    let _ = out.write_all(b"\x1b[?25l\x1b[2J\x1b[H");
-
-    for generation in 0..cfg.gens {
-        if grid.render(generation, &mut out).is_err() {
-            break;
-        }
-        thread::sleep(Duration::from_millis(cfg.delay_ms));
-        grid.step();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use grid::Grid;
 
     #[test]
-    fn blinker_oscillates() {
-        let mut g = Grid::new(5, 5);
-        g.set(1, 2, true);
+    fn until_stable_stops_on_block() {
+        let mut g = Grid::new(6, 6);
+        // block still life
         g.set(2, 2, true);
         g.set(3, 2, true);
-        g.step();
-        assert!(!g.cells[g.idx(1, 2)]);
-        assert!(!g.cells[g.idx(3, 2)]);
-        assert!(g.cells[g.idx(2, 1)]);
-        assert!(g.cells[g.idx(2, 2)]);
-        assert!(g.cells[g.idx(2, 3)]);
-        g.step();
-        assert!(g.cells[g.idx(1, 2)]);
-        assert!(g.cells[g.idx(2, 2)]);
-        assert!(g.cells[g.idx(3, 2)]);
-    }
+        g.set(2, 3, true);
+        g.set(3, 3, true);
 
-    #[test]
-    fn block_is_still_life() {
-        let mut g = Grid::new(4, 4);
-        g.set(1, 1, true);
-        g.set(2, 1, true);
-        g.set(1, 2, true);
-        g.set(2, 2, true);
-        let snapshot = g.cells.clone();
-        g.step();
-        assert_eq!(g.cells, snapshot);
-    }
-
-    #[test]
-    fn toroidal_wrap_counts_corner_neighbor() {
-        let mut g = Grid::new(5, 5);
-        g.set(0, 0, true);
-        assert_eq!(g.count_neighbors(4, 4), 1);
-    }
-
-    #[test]
-    fn lonely_cell_dies() {
-        let mut g = Grid::new(5, 5);
-        g.set(2, 2, true);
-        g.step();
-        assert_eq!(g.population(), 0);
-    }
-
-    #[test]
-    fn rng_is_deterministic() {
-        let mut a = Rng::new(42);
-        let mut b = Rng::new(42);
-        for _ in 0..100 {
-            assert_eq!(a.next_u64(), b.next_u64());
+        let mut generation = 0u64;
+        let max = 100u64;
+        let mut stopped_stable = false;
+        while generation < max {
+            let prev = g.clone();
+            g.step();
+            generation += 1;
+            if g.equals(&prev) {
+                stopped_stable = true;
+                break;
+            }
         }
+        assert!(stopped_stable);
+        assert_eq!(generation, 1);
+        assert_eq!(g.population(), 4);
+    }
+
+    #[test]
+    fn until_stable_dies_out() {
+        let mut g = Grid::new(5, 5);
+        g.set(2, 2, true); // lonely cell
+        let mut generation = 0u64;
+        let mut stopped = false;
+        while generation < 50 {
+            let prev = g.clone();
+            g.step();
+            generation += 1;
+            if g.equals(&prev) {
+                stopped = true;
+                break;
+            }
+        }
+        assert!(stopped);
+        assert_eq!(g.population(), 0);
+        assert_eq!(generation, 2); // dies at gen1 empty, gen2 empty==prev
     }
 }
