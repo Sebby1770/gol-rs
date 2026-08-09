@@ -1,6 +1,6 @@
 [package]
 name = "gol-rs"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 description = "Life-like cellular automata in your terminal (Conway + multi-rule)"
 license = "MIT"
@@ -8,6 +8,10 @@ repository = "https://github.com/Sebby1770/gol-rs"
 readme = "README.md"
 keywords = ["cli", "game-of-life", "cellular-automata", "terminal"]
 categories = ["command-line-utilities"]
+
+[lib]
+name = "gol_rs"
+path = "src/lib.rs"
 
 [[bin]]
 name = "gol"

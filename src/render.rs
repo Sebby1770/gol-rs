@@ -1,5 +1,8 @@
 use crate::grid::{Grid, StepStats};
-use std::io::{self, Write};
+use crate::theme::Theme;
+use std::fs::File;
+use std::io::{self, BufWriter, Write};
+use std::path::Path;
 
 /// How to draw live/dead cells.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,8 +54,10 @@ pub struct RenderOpts {
     pub style: Style,
     pub color: bool,
     pub show_stats: bool,
-    /// Colour live cells by age: young=green → yellow → red (ANSI 256).
+    /// Colour live cells by age within the theme palette.
     pub age_heat: bool,
+    /// Colour theme.
+    pub theme: Theme,
     /// Extra status suffix (e.g. interactive pause / rule name).
     pub status_extra: String,
 }
@@ -64,6 +69,7 @@ impl Default for RenderOpts {
             color: true,
             show_stats: true,
             age_heat: false,
+            theme: Theme::CLASSIC,
             status_extra: String::new(),
         }
     }
@@ -100,15 +106,23 @@ fn write_header<W: Write>(
 ) -> io::Result<()> {
     let pop = grid.population();
     let quit_hint = if opts.status_extra.contains("interactive") {
-        "keys: spc . + - r q"
+        "keys: spc . + - r t a w q"
     } else {
         "Ctrl-C to quit"
     };
+    let theme = opts.theme;
     if opts.color {
         write!(
             out,
-            "\x1b[1;36mgol-rs\x1b[0m  gen \x1b[33m{:>5}\x1b[0m  pop \x1b[35m{:>5}\x1b[0m  grid \x1b[33m{}x{}\x1b[0m",
-            generation, pop, grid.w, grid.h
+            "{}gol-rs\x1b[0m  gen {}{:>5}\x1b[0m  pop {}{:>5}\x1b[0m  grid {}{}x{}\x1b[0m",
+            theme.title_ansi(),
+            theme.accent_ansi(),
+            generation,
+            theme.pop_ansi(),
+            pop,
+            theme.accent_ansi(),
+            grid.w,
+            grid.h
         )?;
         if let Some(s) = last_stats {
             write!(
@@ -121,7 +135,12 @@ fn write_header<W: Write>(
             write!(out, "  maxage \x1b[31m{}\x1b[0m", grid.max_age())?;
         }
         if !opts.status_extra.is_empty() {
-            write!(out, "  \x1b[36m{}\x1b[0m", opts.status_extra)?;
+            write!(
+                out,
+                "  {}{}\x1b[0m",
+                theme.title_ansi(),
+                opts.status_extra
+            )?;
         }
         write!(out, "  ({quit_hint})\x1b[K\n")?;
     } else {
@@ -144,41 +163,19 @@ fn write_header<W: Write>(
     Ok(())
 }
 
-/// Map cell age → ANSI 256 colour index (green → yellow → red).
-///
-/// age 1: bright green; mid ages: yellow/orange; high: red.
-fn age_color_256(age: u16) -> u8 {
-    // Use a soft log-ish ramp so both young and old are visible.
-    // 1 → 46 (green), then through 226 yellow, 208 orange, 196 red.
-    match age {
-        0 => 0,
-        1 => 46,   // bright green
-        2 => 82,   // green-yellow
-        3..=4 => 118,
-        5..=7 => 154,
-        8..=12 => 190,
-        13..=20 => 226,  // yellow
-        21..=35 => 220,
-        36..=55 => 214,
-        56..=80 => 208,  // orange
-        81..=120 => 202,
-        121..=200 => 196, // red
-        _ => 160,         // dark red
-    }
-}
-
-fn write_age_fg<W: Write>(out: &mut W, age: u16) -> io::Result<()> {
-    let c = age_color_256(age);
+fn write_age_fg<W: Write>(out: &mut W, theme: Theme, age: u16) -> io::Result<()> {
+    let c = theme.age_color_256(age);
     write!(out, "\x1b[38;5;{c}m")
 }
 
 fn render_block<W: Write>(grid: &Grid, opts: &RenderOpts, out: &mut W) -> io::Result<()> {
+    let live_open = opts.theme.live_ansi();
     for y in 0..grid.h {
         if opts.age_heat && opts.color {
             for x in 0..grid.w {
                 let i = grid.idx(x, y);
                 if grid.cells[i] {
-                    write_age_fg(out, grid.ages[i])?;
+                    write_age_fg(out, opts.theme, grid.ages[i])?;
                     out.write_all("██".as_bytes())?;
                     out.write_all(b"\x1b[0m")?;
                 } else {
@@ -191,7 +188,7 @@ fn render_block<W: Write>(grid: &Grid, opts: &RenderOpts, out: &mut W) -> io::Re
                 let alive = grid.cells[grid.idx(x, y)];
                 if opts.color {
                     if alive && !run_alive {
-                        out.write_all(b"\x1b[32m")?;
+                        out.write_all(live_open.as_bytes())?;
                         run_alive = true;
                     } else if !alive && run_alive {
                         out.write_all(b"\x1b[0m")?;
@@ -210,12 +207,13 @@ fn render_block<W: Write>(grid: &Grid, opts: &RenderOpts, out: &mut W) -> io::Re
 }
 
 fn render_dots<W: Write>(grid: &Grid, opts: &RenderOpts, out: &mut W) -> io::Result<()> {
+    let live_open = opts.theme.live_ansi();
     for y in 0..grid.h {
         if opts.age_heat && opts.color {
             for x in 0..grid.w {
                 let i = grid.idx(x, y);
                 if grid.cells[i] {
-                    write_age_fg(out, grid.ages[i])?;
+                    write_age_fg(out, opts.theme, grid.ages[i])?;
                     out.write_all("·".as_bytes())?;
                     out.write_all(b"\x1b[0m")?;
                 } else {
@@ -228,7 +226,7 @@ fn render_dots<W: Write>(grid: &Grid, opts: &RenderOpts, out: &mut W) -> io::Res
                 let alive = grid.cells[grid.idx(x, y)];
                 if opts.color {
                     if alive && !run_alive {
-                        out.write_all(b"\x1b[32m")?;
+                        out.write_all(live_open.as_bytes())?;
                         run_alive = true;
                     } else if !alive && run_alive {
                         out.write_all(b"\x1b[0m")?;
@@ -254,6 +252,7 @@ fn render_dots<W: Write>(grid: &Grid, opts: &RenderOpts, out: &mut W) -> io::Res
 ///  6 7
 fn render_braille<W: Write>(grid: &Grid, opts: &RenderOpts, out: &mut W) -> io::Result<()> {
     const DOT_MAP: [[u8; 2]; 4] = [[0, 3], [1, 4], [2, 5], [6, 7]];
+    let live_open = opts.theme.live_ansi();
 
     let rows = (grid.h + 3) / 4;
     let cols = (grid.w + 1) / 2;
@@ -279,9 +278,9 @@ fn render_braille<W: Write>(grid: &Grid, opts: &RenderOpts, out: &mut W) -> io::
             }
             if opts.color {
                 if any && opts.age_heat {
-                    write_age_fg(out, max_age)?;
+                    write_age_fg(out, opts.theme, max_age)?;
                 } else if any {
-                    out.write_all(b"\x1b[32m")?;
+                    out.write_all(live_open.as_bytes())?;
                 }
             }
             let ch = char::from_u32(0x2800 + bits).unwrap_or(' ');
@@ -295,6 +294,87 @@ fn render_braille<W: Write>(grid: &Grid, opts: &RenderOpts, out: &mut W) -> io::
         out.write_all(b"\x1b[K\n")?;
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// PPM export (P6 binary) — pure stdlib
+// ---------------------------------------------------------------------------
+
+/// Write the grid as a binary PPM (P6) image using theme / age colours.
+///
+/// Each cell is a single pixel. Live cells use age heat-map RGB when `age_heat`
+/// is true, otherwise the theme's solid live colour.
+pub fn export_ppm(
+    grid: &Grid,
+    path: &Path,
+    theme: Theme,
+    age_heat: bool,
+) -> Result<(), String> {
+    let f = File::create(path).map_err(|e| format!("export-ppm {}: {e}", path.display()))?;
+    let mut w = BufWriter::new(f);
+    write_ppm_p6(grid, theme, age_heat, &mut w)
+        .map_err(|e| format!("export-ppm {}: {e}", path.display()))
+}
+
+/// Write P6 PPM to any writer.
+pub fn write_ppm_p6<W: Write>(
+    grid: &Grid,
+    theme: Theme,
+    age_heat: bool,
+    out: &mut W,
+) -> io::Result<()> {
+    writeln!(out, "P6")?;
+    writeln!(out, "{} {}", grid.w, grid.h)?;
+    writeln!(out, "255")?;
+    for y in 0..grid.h {
+        for x in 0..grid.w {
+            let i = grid.idx(x, y);
+            let (r, g, b) = if grid.cells[i] {
+                if age_heat {
+                    theme.age_rgb(grid.ages[i])
+                } else {
+                    theme.live_rgb
+                }
+            } else {
+                theme.dead_rgb
+            };
+            out.write_all(&[r, g, b])?;
+        }
+    }
+    out.flush()
+}
+
+/// Write P3 (ASCII) PPM — handy for tests / debugging.
+#[allow(dead_code)]
+pub fn write_ppm_p3<W: Write>(
+    grid: &Grid,
+    theme: Theme,
+    age_heat: bool,
+    out: &mut W,
+) -> io::Result<()> {
+    writeln!(out, "P3")?;
+    writeln!(out, "{} {}", grid.w, grid.h)?;
+    writeln!(out, "255")?;
+    for y in 0..grid.h {
+        for x in 0..grid.w {
+            let i = grid.idx(x, y);
+            let (r, g, b) = if grid.cells[i] {
+                if age_heat {
+                    theme.age_rgb(grid.ages[i])
+                } else {
+                    theme.live_rgb
+                }
+            } else {
+                theme.dead_rgb
+            };
+            if x > 0 {
+                write!(out, " ")?;
+            }
+            write!(out, "{r} {g} {b}")?;
+        }
+        writeln!(out)?;
+    }
+    out.flush()
 }
 
 #[cfg(test)]
@@ -332,9 +412,10 @@ mod tests {
 
     #[test]
     fn age_color_ramps() {
-        assert_eq!(age_color_256(1), 46);
-        assert!(age_color_256(1) != age_color_256(50));
-        assert!(age_color_256(200) != age_color_256(1));
+        let t = Theme::CLASSIC;
+        assert_eq!(t.age_color_256(1), 46);
+        assert!(t.age_color_256(1) != t.age_color_256(50));
+        assert!(t.age_color_256(200) != t.age_color_256(1));
     }
 
     #[test]
@@ -342,7 +423,6 @@ mod tests {
         let mut g = Grid::new(3, 1);
         g.set(0, 0, true);
         g.set(1, 0, true);
-        // age them differently via direct write
         g.ages[0] = 1;
         g.ages[1] = 100;
         let mut buf = Vec::new();
@@ -350,10 +430,75 @@ mod tests {
             color: true,
             age_heat: true,
             style: Style::Block,
+            theme: Theme::CLASSIC,
             ..Default::default()
         };
         render_block(&g, &opts, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(s.contains("\x1b[38;5;"), "expected 256-color SGR: {s:?}");
+    }
+
+    #[test]
+    fn theme_live_color_in_block() {
+        let mut g = Grid::new(2, 1);
+        g.set(0, 0, true);
+        let mut buf = Vec::new();
+        let opts = RenderOpts {
+            color: true,
+            age_heat: false,
+            theme: Theme::FIRE,
+            style: Style::Block,
+            ..Default::default()
+        };
+        render_block(&g, &opts, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.contains("\x1b[91m"), "expected fire live SGR: {s:?}");
+    }
+
+    #[test]
+    fn ppm_p6_header_and_size() {
+        let mut g = Grid::new(2, 2);
+        g.set(0, 0, true);
+        let mut buf = Vec::new();
+        write_ppm_p6(&g, Theme::CLASSIC, false, &mut buf).unwrap();
+        // P6\n2 2\n255\n + 2*2*3 bytes
+        assert!(buf.starts_with(b"P6\n"));
+        let body_start = {
+            // find third newline
+            let mut count = 0;
+            let mut idx = 0;
+            for (i, &b) in buf.iter().enumerate() {
+                if b == b'\n' {
+                    count += 1;
+                    if count == 3 {
+                        idx = i + 1;
+                        break;
+                    }
+                }
+            }
+            idx
+        };
+        assert_eq!(buf.len() - body_start, 2 * 2 * 3);
+        // live pixel at (0,0) is classic green-ish
+        assert_eq!(
+            &buf[body_start..body_start + 3],
+            &[
+                Theme::CLASSIC.live_rgb.0,
+                Theme::CLASSIC.live_rgb.1,
+                Theme::CLASSIC.live_rgb.2
+            ]
+        );
+    }
+
+    #[test]
+    fn ppm_p3_ascii() {
+        let mut g = Grid::new(1, 1);
+        g.set(0, 0, true);
+        let mut buf = Vec::new();
+        write_ppm_p3(&g, Theme::MONO, false, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.starts_with("P3\n"));
+        assert!(s.contains("255"));
+        assert!(s.contains("230 230 230"));
     }
 }

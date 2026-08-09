@@ -1,17 +1,15 @@
-mod grid;
-mod history;
-mod patterns;
-mod render;
-mod rng;
-mod rule;
+//! `gol` CLI binary — thin front-end over the `gol_rs` library.
+
 mod term;
 
-use grid::{Grid, StepStats};
-use history::{CycleCheck, History};
-use patterns::{dump_ascii, dump_rle, list_patterns, load_file, save_file, seed_pattern};
-use render::{render_frame, CursorGuard, RenderOpts, Style};
-use rng::Rng;
-use rule::{list_rules, Rule};
+use gol_rs::grid::{Grid, StepStats};
+use gol_rs::history::{CycleCheck, History};
+use gol_rs::patterns::{dump_ascii, dump_rle, list_patterns, load_file, save_file, seed_pattern};
+use gol_rs::render::{export_ppm, render_frame, CursorGuard, RenderOpts, Style};
+use gol_rs::rng::Rng;
+use gol_rs::rule::{list_rules, Rule};
+use gol_rs::theme::Theme;
+use gol_rs::transform::{flip_h_in_place, flip_v_in_place, rotate90_in_place};
 use term::{drain_keys, poll_key, stdin_is_tty, Key, RawMode};
 
 use std::env;
@@ -20,10 +18,10 @@ use std::io::{self, BufWriter, Write};
 use std::path::PathBuf;
 use std::process;
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const HELP: &str = "\
-gol — Conway's Game of Life in your terminal (v0.3)
+gol — Life-like cellular automata in your terminal (v0.4)
 
 USAGE:
     gol [OPTIONS]
@@ -44,27 +42,40 @@ OPTIONS:
         --style MODE       block | braille | dots (default: block)
         --rule NAME|B#/S#  Life-like rule (default: conway / B3/S23)
         --list-rules       list built-in rules and exit
-        --age              heat-map colour by cell age (green→yellow→red)
+        --age              heat-map colour by cell age (within theme)
+        --theme NAME       classic|neon|fire|ocean|mono (default: classic)
+        --finite, --no-wrap  hard edges (neighbors off-grid count as dead)
+        --rotate90         rotate seed 90° clockwise after load/pattern
+        --flip-h           flip seed horizontally
+        --flip-v           flip seed vertically
         --until-stable     stop when grid equals previous generation (period 1)
         --until-cycle      stop when any prior generation reappears; report period
-    -i, --interactive      keyboard control (TTY): Space pause, . step, +/- speed, r reseed, q quit
+    -i, --interactive      keyboard control (TTY)
         --quiet, --once    only print final stats (no animation)
+        --summary          always print final summary (even when animating)
         --no-color         disable ANSI colours
-        --stats PATH       write gen,pop CSV history to PATH
+        --stats PATH       write gen,pop,births,deaths CSV history to PATH
+        --export-ppm PATH  write final frame as P6 PPM (RGB from theme/age)
+        --bench            run gens without render; print gens/sec & cells/sec
     -h, --help             print this help
+
+INTERACTIVE KEYS (-i):
+    Space  pause/resume    .  step    +/-  speed
+    r      reseed          t  cycle theme    a  toggle age heat-map
+    w      toggle wrap     q  quit
 
 EXAMPLES:
     gol
     gol --pattern gosper --width 80 --height 30 --delay 60
-    gol --pattern toad --until-stable --gens 100
     gol --pattern blinker --until-cycle --quiet
-    gol --rule highlife --pattern random --density 0.2
-    gol --rule B36/S23 --list-rules
-    gol --age --pattern acorn --style block
-    gol -i --pattern gosper --width 80 --height 25
-    gol --load gun.rle --style braille --gens 200
-    gol --pattern acorn --quiet --dump ascii --stats pop.csv
+    gol --rule highlife --theme neon --age
+    gol --finite --pattern glider --width 40 --height 20
+    gol --bench --width 200 --height 100 --gens 200 --seed 1
+    gol --pattern acorn --export-ppm out.ppm --quiet --gens 100
+    gol -i --pattern gosper --theme fire
+    gol --load gun.rle --rotate90 --flip-h --stats pop.csv
     gol --list-patterns
+    gol --list-rules
 ";
 
 struct Config {
@@ -82,12 +93,20 @@ struct Config {
     style: Style,
     rule: Rule,
     age_heat: bool,
+    theme: Theme,
+    wrap: bool,
+    rotate90: bool,
+    flip_h: bool,
+    flip_v: bool,
     until_stable: bool,
     until_cycle: bool,
     interactive: bool,
     quiet: bool,
+    summary: bool,
     color: bool,
     stats_path: Option<PathBuf>,
+    export_ppm: Option<PathBuf>,
+    bench: bool,
     list_patterns: bool,
     list_rules: bool,
 }
@@ -113,14 +132,59 @@ impl Default for Config {
             style: Style::Block,
             rule: Rule::CONWAY,
             age_heat: false,
+            theme: Theme::CLASSIC,
+            wrap: true,
+            rotate90: false,
+            flip_h: false,
+            flip_v: false,
             until_stable: false,
             until_cycle: false,
             interactive: false,
             quiet: false,
+            summary: false,
             color: true,
             stats_path: None,
+            export_ppm: None,
+            bench: false,
             list_patterns: false,
             list_rules: false,
+        }
+    }
+}
+
+/// Aggregate run statistics.
+#[derive(Debug, Clone, Default)]
+struct RunStats {
+    max_pop: usize,
+    min_pop: usize,
+    gen_at_max_pop: u64,
+    total_births: u64,
+    total_deaths: u64,
+    /// True once gen ≥ 1 has been observed for min tracking.
+    started: bool,
+}
+
+impl RunStats {
+    fn observe_gen0(&mut self, pop: usize) {
+        self.max_pop = pop;
+        self.min_pop = pop;
+        self.gen_at_max_pop = 0;
+        self.started = false;
+    }
+
+    fn observe_step(&mut self, gen: u64, pop: usize, stats: StepStats) {
+        self.total_births += stats.births as u64;
+        self.total_deaths += stats.deaths as u64;
+        if !self.started {
+            // min_pop is tracked after gen0
+            self.min_pop = pop;
+            self.started = true;
+        } else {
+            self.min_pop = self.min_pop.min(pop);
+        }
+        if pop > self.max_pop {
+            self.max_pop = pop;
+            self.gen_at_max_pop = gen;
         }
     }
 }
@@ -184,12 +248,20 @@ fn parse_args() -> Result<Config, String> {
             "--style" => cfg.style = Style::parse(&take(&mut i)?)?,
             "--rule" => cfg.rule = Rule::parse(&take(&mut i)?)?,
             "--age" => cfg.age_heat = true,
+            "--theme" => cfg.theme = Theme::parse(&take(&mut i)?)?,
+            "--finite" | "--no-wrap" => cfg.wrap = false,
+            "--rotate90" => cfg.rotate90 = true,
+            "--flip-h" => cfg.flip_h = true,
+            "--flip-v" => cfg.flip_v = true,
             "--until-stable" => cfg.until_stable = true,
             "--until-cycle" => cfg.until_cycle = true,
             "-i" | "--interactive" => cfg.interactive = true,
             "--quiet" | "--once" => cfg.quiet = true,
+            "--summary" => cfg.summary = true,
             "--no-color" => cfg.color = false,
             "--stats" => cfg.stats_path = Some(PathBuf::from(take(&mut i)?)),
+            "--export-ppm" => cfg.export_ppm = Some(PathBuf::from(take(&mut i)?)),
+            "--bench" => cfg.bench = true,
             "-h" | "--help" => {
                 print!("{HELP}");
                 process::exit(0);
@@ -224,15 +296,18 @@ fn parse_args() -> Result<Config, String> {
     if cfg.interactive && cfg.quiet {
         return Err("--interactive cannot be combined with --quiet".into());
     }
+    if cfg.bench && cfg.interactive {
+        return Err("--bench cannot be combined with --interactive".into());
+    }
     Ok(cfg)
 }
 
 fn write_stats_header(f: &mut File) -> io::Result<()> {
-    writeln!(f, "gen,pop")
+    writeln!(f, "gen,pop,births,deaths")
 }
 
-fn append_stats(f: &mut File, gen: u64, pop: usize) -> io::Result<()> {
-    writeln!(f, "{gen},{pop}")
+fn append_stats(f: &mut File, gen: u64, pop: usize, births: usize, deaths: usize) -> io::Result<()> {
+    writeln!(f, "{gen},{pop},{births},{deaths}")
 }
 
 fn save_snapshot(grid: &Grid, base: &PathBuf, gen: u64) -> Result<(), String> {
@@ -271,13 +346,100 @@ impl StopReason {
     }
 }
 
+fn apply_transforms(grid: &mut Grid, cfg: &Config) {
+    if cfg.rotate90 {
+        rotate90_in_place(grid);
+    }
+    if cfg.flip_h {
+        flip_h_in_place(grid);
+    }
+    if cfg.flip_v {
+        flip_v_in_place(grid);
+    }
+}
+
 fn reseed_grid(grid: &mut Grid, cfg: &Config, rng: &mut Rng) -> Result<(), String> {
-    grid.clear();
+    // Preserve wrap; rebuild size if rotate swapped dims — reseed uses cfg w/h.
+    let wrap = grid.wrap;
+    *grid = Grid::with_wrap(cfg.w, cfg.h, wrap);
     if let Some(ref path) = cfg.load {
         load_file(grid, path)?;
     } else {
         seed_pattern(grid, &cfg.pattern, rng, cfg.density)?;
     }
+    apply_transforms(grid, cfg);
+    Ok(())
+}
+
+fn print_summary(
+    out: &mut impl Write,
+    generation: u64,
+    pop: usize,
+    reason: &str,
+    run: &RunStats,
+    last_stats: Option<StepStats>,
+    rule: &Rule,
+    theme: Theme,
+    wrap: bool,
+    color: bool,
+) -> io::Result<()> {
+    if color {
+        writeln!(
+            out,
+            "{}gol-rs\x1b[0m  gen {}{generation}\x1b[0m  pop {}{pop}\x1b[0m  ({reason})",
+            theme.title_ansi(),
+            theme.accent_ansi(),
+            theme.pop_ansi(),
+        )?;
+    } else {
+        writeln!(out, "gol-rs  gen {generation}  pop {pop}  ({reason})")?;
+    }
+    writeln!(
+        out,
+        "  max_pop {} (gen {})  min_pop {}  births {}  deaths {}",
+        run.max_pop, run.gen_at_max_pop, run.min_pop, run.total_births, run.total_deaths
+    )?;
+    if let Some(s) = last_stats {
+        writeln!(out, "  last step: +{}/-{}", s.births, s.deaths)?;
+    }
+    if rule != &Rule::CONWAY {
+        writeln!(out, "  rule: {}", rule.display_name())?;
+    }
+    if theme.name != "classic" {
+        writeln!(out, "  theme: {}", theme.name)?;
+    }
+    if !wrap {
+        writeln!(out, "  topology: finite")?;
+    }
+    Ok(())
+}
+
+fn run_bench(cfg: &Config, grid: &mut Grid) -> Result<(), String> {
+    let rule = cfg.rule;
+    let cells = (grid.w * grid.h) as u64;
+    let gens = cfg.gens;
+    // Warmup one step so first allocs don't skew (buffers already sized).
+    let _ = grid.step_with(&rule);
+
+    let start = Instant::now();
+    for _ in 0..gens {
+        grid.step_with(&rule);
+    }
+    let elapsed = start.elapsed();
+    let secs = elapsed.as_secs_f64().max(1e-12);
+    let gps = gens as f64 / secs;
+    let cps = (gens as f64) * (cells as f64) / secs;
+    println!(
+        "bench  gens={gens}  grid={}x{}  cells={cells}  wrap={}  rule={}",
+        grid.w,
+        grid.h,
+        grid.wrap,
+        rule.to_string_bs()
+    );
+    println!(
+        "  time={:.3}s  gens/sec={:.1}  cells/sec={:.0}",
+        secs, gps, cps
+    );
     Ok(())
 }
 
@@ -291,13 +453,18 @@ fn run(cfg: Config) -> Result<(), String> {
         return Ok(());
     }
 
-    let mut grid = Grid::new(cfg.w, cfg.h);
+    let mut grid = Grid::with_wrap(cfg.w, cfg.h, cfg.wrap);
     let mut rng = Rng::new(cfg.seed);
 
     if let Some(ref path) = cfg.load {
         load_file(&mut grid, path)?;
     } else {
         seed_pattern(&mut grid, &cfg.pattern, &mut rng, cfg.density)?;
+    }
+    apply_transforms(&mut grid, &cfg);
+
+    if cfg.bench {
+        return run_bench(&cfg, &mut grid);
     }
 
     let mut stats_file = if let Some(ref p) = cfg.stats_path {
@@ -328,11 +495,14 @@ fn run(cfg: Config) -> Result<(), String> {
     }
 
     let rule = cfg.rule;
+    let mut theme = cfg.theme;
+    let mut age_heat = cfg.age_heat;
     let mut ropts = RenderOpts {
         style: cfg.style,
         color: cfg.color && animate,
         show_stats: true,
-        age_heat: cfg.age_heat,
+        age_heat,
+        theme,
         status_extra: String::new(),
     };
 
@@ -341,6 +511,7 @@ fn run(cfg: Config) -> Result<(), String> {
     let mut stop_reason = StopReason::MaxGens;
     let mut delay_ms = cfg.delay_ms.max(1);
     let mut paused = false;
+    let mut run_stats = RunStats::default();
 
     // History for cycle detection (also used for until-stable as period-1).
     let need_history = cfg.until_cycle || cfg.until_stable;
@@ -351,11 +522,12 @@ fn run(cfg: Config) -> Result<(), String> {
     };
 
     // Record gen 0
+    let pop0 = grid.population();
+    run_stats.observe_gen0(pop0);
     if let Some(ref mut f) = stats_file {
-        append_stats(f, 0, grid.population()).map_err(|e| format!("stats: {e}"))?;
+        append_stats(f, 0, pop0, 0, 0).map_err(|e| format!("stats: {e}"))?;
     }
     if let Some(ref mut hist) = history {
-        // Observe gen 0; cannot be a cycle yet.
         let _ = hist.observe(&grid, 0);
     }
 
@@ -376,7 +548,21 @@ fn run(cfg: Config) -> Result<(), String> {
                 }
                 extra.push_str(&rule.to_string_bs());
             }
+            if theme.name != "classic" {
+                if !extra.is_empty() {
+                    extra.push(' ');
+                }
+                extra.push_str(theme.name);
+            }
+            if !grid.wrap {
+                if !extra.is_empty() {
+                    extra.push(' ');
+                }
+                extra.push_str("finite");
+            }
             ropts.status_extra = extra;
+            ropts.theme = theme;
+            ropts.age_heat = age_heat;
             if render_frame(&grid, generation, last_stats, &ropts, &mut out).is_err() {
                 break;
             }
@@ -386,7 +572,6 @@ fn run(cfg: Config) -> Result<(), String> {
         let mut do_step = true;
         if want_interactive {
             let timeout = if paused { 50 } else { delay_ms as i32 };
-            // Wait for key or timeout; also drain any burst.
             if let Some(key) = poll_key(timeout) {
                 match key {
                     Key::Quit => {
@@ -413,26 +598,40 @@ fn run(cfg: Config) -> Result<(), String> {
                         do_step = !paused;
                     }
                     Key::Reseed => {
-                        // Advance seed a bit for variety
                         let _ = rng.next_u64();
                         reseed_grid(&mut grid, &cfg, &mut rng)?;
                         generation = 0;
                         last_stats = None;
+                        run_stats = RunStats::default();
+                        run_stats.observe_gen0(grid.population());
                         if let Some(ref mut hist) = history {
                             *hist = History::default_window();
                             let _ = hist.observe(&grid, 0);
                         }
                         if let Some(ref mut f) = stats_file {
-                            append_stats(f, 0, grid.population())
+                            append_stats(f, 0, grid.population(), 0, 0)
                                 .map_err(|e| format!("stats: {e}"))?;
                         }
                         do_step = false;
+                    }
+                    Key::Theme => {
+                        theme = theme.next();
+                        ropts.theme = theme;
+                        do_step = !paused;
+                    }
+                    Key::Age => {
+                        age_heat = !age_heat;
+                        ropts.age_heat = age_heat;
+                        do_step = !paused;
+                    }
+                    Key::Wrap => {
+                        grid.wrap = !grid.wrap;
+                        do_step = !paused;
                     }
                     Key::Other(_) => {
                         do_step = !paused;
                     }
                 }
-                // Drain remaining keys in buffer
                 if let Some(k) = drain_keys() {
                     if matches!(k, Key::Quit) {
                         stop_reason = StopReason::Quit;
@@ -440,7 +639,6 @@ fn run(cfg: Config) -> Result<(), String> {
                     }
                 }
             } else {
-                // timeout — step only if not paused
                 do_step = !paused;
             }
         } else if animate {
@@ -451,7 +649,6 @@ fn run(cfg: Config) -> Result<(), String> {
             continue;
         }
 
-        // Max gens reached before stepping further?
         if generation >= cfg.gens {
             stop_reason = StopReason::MaxGens;
             break;
@@ -460,9 +657,12 @@ fn run(cfg: Config) -> Result<(), String> {
         let stats = grid.step_with(&rule);
         last_stats = Some(stats);
         generation += 1;
+        let pop = grid.population();
+        run_stats.observe_step(generation, pop, stats);
 
         if let Some(ref mut f) = stats_file {
-            append_stats(f, generation, grid.population()).map_err(|e| format!("stats: {e}"))?;
+            append_stats(f, generation, pop, stats.births, stats.deaths)
+                .map_err(|e| format!("stats: {e}"))?;
         }
 
         if let (Some(ref base), Some(every)) = (&cfg.save, cfg.save_every) {
@@ -473,7 +673,6 @@ fn run(cfg: Config) -> Result<(), String> {
 
         if let Some(ref mut hist) = history {
             if let CycleCheck::Cycle { period } = hist.observe(&grid, generation) {
-                // --until-cycle: any period; --until-stable: period 1 only
                 let stop = if cfg.until_cycle {
                     true
                 } else {
@@ -498,6 +697,8 @@ fn run(cfg: Config) -> Result<(), String> {
 
     // Final frame / quiet summary
     let reason = stop_reason.label();
+    let pop = grid.population();
+
     if animate {
         let mut extra = String::new();
         if rule != Rule::CONWAY {
@@ -506,9 +707,10 @@ fn run(cfg: Config) -> Result<(), String> {
         }
         extra.push_str(&format!("done:{reason}"));
         ropts.status_extra = extra;
+        ropts.theme = theme;
+        ropts.age_heat = age_heat;
         let _ = render_frame(&grid, generation, last_stats, &ropts, &mut out);
         let _ = out.flush();
-        // Print cycle info below the grid
         if let StopReason::Cycle { period } = stop_reason {
             let _ = writeln!(
                 out,
@@ -522,26 +724,39 @@ fn run(cfg: Config) -> Result<(), String> {
             );
             let _ = out.flush();
         }
-    } else {
-        let pop = grid.population();
-        if cfg.color {
-            writeln!(
-                out,
-                "\x1b[1;36mgol-rs\x1b[0m  gen \x1b[33m{generation}\x1b[0m  pop \x1b[35m{pop}\x1b[0m  ({reason})"
+        if cfg.summary {
+            print_summary(
+                &mut out,
+                generation,
+                pop,
+                &reason,
+                &run_stats,
+                last_stats,
+                &rule,
+                theme,
+                grid.wrap,
+                cfg.color,
             )
             .map_err(|e| e.to_string())?;
-        } else {
-            writeln!(out, "gol-rs  gen {generation}  pop {pop}  ({reason})")
-                .map_err(|e| e.to_string())?;
+            let _ = out.flush();
         }
-        if let Some(s) = last_stats {
-            writeln!(out, "last step: +{}/-{}", s.births, s.deaths).map_err(|e| e.to_string())?;
-        }
+    } else {
+        // quiet: always print summary with rich stats
+        print_summary(
+            &mut out,
+            generation,
+            pop,
+            &reason,
+            &run_stats,
+            last_stats,
+            &rule,
+            theme,
+            grid.wrap,
+            cfg.color,
+        )
+        .map_err(|e| e.to_string())?;
         if let StopReason::Cycle { period } = stop_reason {
-            writeln!(out, "cycle period: {period}").map_err(|e| e.to_string())?;
-        }
-        if rule != Rule::CONWAY {
-            writeln!(out, "rule: {}", rule.display_name()).map_err(|e| e.to_string())?;
+            writeln!(out, "  cycle period: {period}").map_err(|e| e.to_string())?;
         }
         let _ = out.flush();
     }
@@ -550,6 +765,13 @@ fn run(cfg: Config) -> Result<(), String> {
         save_file(&grid, path)?;
         if !cfg.quiet {
             eprintln!("saved RLE → {}", path.display());
+        }
+    }
+
+    if let Some(ref path) = cfg.export_ppm {
+        export_ppm(&grid, path, theme, age_heat)?;
+        if !cfg.quiet {
+            eprintln!("exported PPM → {}", path.display());
         }
     }
 
@@ -581,9 +803,9 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use grid::Grid;
-    use history::{CycleCheck, History};
-    use rule::Rule;
+    use gol_rs::grid::Grid;
+    use gol_rs::history::{CycleCheck, History};
+    use gol_rs::rule::Rule;
 
     #[test]
     fn until_stable_stops_on_block() {
@@ -659,5 +881,22 @@ mod tests {
         assert_eq!(Rule::parse("B3/S23").unwrap(), Rule::CONWAY);
         assert_eq!(Rule::parse("23/3").unwrap(), Rule::CONWAY);
         assert!(Rule::parse("highlife").unwrap().births(6));
+    }
+
+    #[test]
+    fn run_stats_tracks_max_min() {
+        let mut rs = RunStats::default();
+        rs.observe_gen0(10);
+        assert_eq!(rs.max_pop, 10);
+        assert_eq!(rs.min_pop, 10);
+        rs.observe_step(1, 15, StepStats { births: 5, deaths: 0 });
+        assert_eq!(rs.max_pop, 15);
+        assert_eq!(rs.gen_at_max_pop, 1);
+        assert_eq!(rs.min_pop, 15);
+        rs.observe_step(2, 8, StepStats { births: 0, deaths: 7 });
+        assert_eq!(rs.max_pop, 15);
+        assert_eq!(rs.min_pop, 8);
+        assert_eq!(rs.total_births, 5);
+        assert_eq!(rs.total_deaths, 7);
     }
 }

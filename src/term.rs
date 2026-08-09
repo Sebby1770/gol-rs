@@ -251,6 +251,9 @@ pub enum Key {
     Slower,   // '-'
     Quit,     // 'q' or 'Q'
     Reseed,   // 'r' or 'R'
+    Theme,    // 't' or 'T' — cycle colour theme
+    Age,      // 'a' or 'A' — toggle age heat-map
+    Wrap,     // 'w' or 'W' — toggle toroidal wrap
     Other(u8),
 }
 
@@ -263,6 +266,9 @@ impl Key {
             b'-' => Key::Slower,
             b'q' | b'Q' => Key::Quit,
             b'r' | b'R' => Key::Reseed,
+            b't' | b'T' => Key::Theme,
+            b'a' | b'A' => Key::Age,
+            b'w' | b'W' => Key::Wrap,
             other => Key::Other(other),
         }
     }
@@ -325,6 +331,9 @@ mod tests {
         assert_eq!(Key::from_byte(b'-'), Key::Slower);
         assert_eq!(Key::from_byte(b'q'), Key::Quit);
         assert_eq!(Key::from_byte(b'R'), Key::Reseed);
+        assert_eq!(Key::from_byte(b't'), Key::Theme);
+        assert_eq!(Key::from_byte(b'a'), Key::Age);
+        assert_eq!(Key::from_byte(b'w'), Key::Wrap);
         assert_eq!(Key::from_byte(b'x'), Key::Other(b'x'));
     }
 }

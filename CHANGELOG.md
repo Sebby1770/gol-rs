@@ -2,6 +2,37 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.4.0] — 2026-08-09
+
+### Added
+- **Library + binary split**: `src/lib.rs` crate `gol_rs` re-exports `grid`, `history`,
+  `patterns`, `render`, `rng`, `rule`, `theme`, `transform`; binary `gol` keeps `term` local
+- **Topology**: `Grid.wrap` (default `true`); `--finite` / `--no-wrap` for hard edges
+  (out-of-bounds neighbors count as dead)
+- **Colour themes** (`src/theme.rs`): `classic`, `neon`, `fire`, `ocean`, `mono`
+  - CLI: `--theme NAME` (default `classic`); works with and without `--age`
+  - Header accents follow the theme
+- **Richer run statistics**: `max_pop`, `min_pop` (after gen0), `gen_at_max_pop`,
+  total births/deaths — printed on quiet exit and with `--summary`
+- **CSV stats** extended: `gen,pop,births,deaths`
+- **Grid transforms** (`src/transform.rs`): `rotate90`, `flip_h`, `flip_v`
+  - CLI: `--rotate90`, `--flip-h`, `--flip-v` (applied after load/pattern)
+- **PPM export**: `--export-ppm PATH` writes final frame as P6 PPM (RGB from theme/age)
+- **Benchmark mode**: `--bench` runs N gens without render; prints gens/sec and cells/sec
+- **Parallel step**: grids with ≥ 20 000 cells fill the next buffer via `std::thread::scope`
+  (row-split workers); sequential path unchanged for small grids
+- **Interactive keys**: `t` cycle theme, `a` toggle age heat-map, `w` toggle wrap
+- `--summary` flag: always print final summary even when animating
+
+### Changed
+- Version bump to **0.4.0**
+- README, HELP, and CHANGELOG updated for 0.4 features
+- Render path takes a `Theme` instead of hard-coded green
+
+### Unchanged
+- Zero crates.io dependencies
+- MIT license
+
 ## [0.3.0] — 2026-08-08
 
 ### Added
