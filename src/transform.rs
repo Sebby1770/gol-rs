@@ -6,16 +6,17 @@ use crate::grid::Grid;
 ///
 /// New cell at `(h-1-y, x)` comes from old `(x, y)`.
 pub fn rotate90(grid: &Grid) -> Grid {
-    let mut out = Grid::with_wrap(grid.h, grid.w, grid.wrap);
+    let mut out = Grid::with_states(grid.h, grid.w, grid.wrap, grid.states);
     for y in 0..grid.h {
         for x in 0..grid.w {
             let i = grid.idx(x, y);
-            if grid.cells[i] {
+            let v = grid.cells[i];
+            if v != 0 {
                 // (x,y) → (h-1-y, x)
                 let nx = grid.h - 1 - y;
                 let ny = x;
                 let j = out.idx(nx, ny);
-                out.cells[j] = true;
+                out.cells[j] = v;
                 out.ages[j] = grid.ages[i];
             }
         }
@@ -25,14 +26,15 @@ pub fn rotate90(grid: &Grid) -> Grid {
 
 /// Flip horizontally (mirror left ↔ right).
 pub fn flip_h(grid: &Grid) -> Grid {
-    let mut out = Grid::with_wrap(grid.w, grid.h, grid.wrap);
+    let mut out = Grid::with_states(grid.w, grid.h, grid.wrap, grid.states);
     for y in 0..grid.h {
         for x in 0..grid.w {
             let i = grid.idx(x, y);
-            if grid.cells[i] {
+            let v = grid.cells[i];
+            if v != 0 {
                 let nx = grid.w - 1 - x;
                 let j = out.idx(nx, y);
-                out.cells[j] = true;
+                out.cells[j] = v;
                 out.ages[j] = grid.ages[i];
             }
         }
@@ -42,14 +44,15 @@ pub fn flip_h(grid: &Grid) -> Grid {
 
 /// Flip vertically (mirror top ↔ bottom).
 pub fn flip_v(grid: &Grid) -> Grid {
-    let mut out = Grid::with_wrap(grid.w, grid.h, grid.wrap);
+    let mut out = Grid::with_states(grid.w, grid.h, grid.wrap, grid.states);
     for y in 0..grid.h {
         for x in 0..grid.w {
             let i = grid.idx(x, y);
-            if grid.cells[i] {
+            let v = grid.cells[i];
+            if v != 0 {
                 let ny = grid.h - 1 - y;
                 let j = out.idx(x, ny);
-                out.cells[j] = true;
+                out.cells[j] = v;
                 out.ages[j] = grid.ages[i];
             }
         }
@@ -148,5 +151,14 @@ mod tests {
         assert!(!rotate90(&g).wrap);
         assert!(!flip_h(&g).wrap);
         assert!(!flip_v(&g).wrap);
+    }
+
+    #[test]
+    fn preserves_multistate() {
+        let mut g = Grid::with_states(4, 4, true, 3);
+        g.set_state(1, 1, 2);
+        let r = rotate90(&g);
+        assert_eq!(r.states, 3);
+        assert_eq!(r.get_state(2, 1), 2); // (1,1) → (4-1-1, 1) = (2,1)
     }
 }

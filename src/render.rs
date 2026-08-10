@@ -1,4 +1,4 @@
-use crate::grid::{Grid, StepStats};
+use crate::grid::{state, Grid, StepStats};
 use crate::theme::Theme;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
@@ -60,6 +60,8 @@ pub struct RenderOpts {
     pub theme: Theme,
     /// Extra status suffix (e.g. interactive pause / rule name).
     pub status_extra: String,
+    /// Optional population sparkline shown in the header.
+    pub sparkline: String,
 }
 
 impl Default for RenderOpts {
@@ -71,6 +73,7 @@ impl Default for RenderOpts {
             age_heat: false,
             theme: Theme::CLASSIC,
             status_extra: String::new(),
+            sparkline: String::new(),
         }
     }
 }
@@ -106,7 +109,7 @@ fn write_header<W: Write>(
 ) -> io::Result<()> {
     let pop = grid.population();
     let quit_hint = if opts.status_extra.contains("interactive") {
-        "keys: spc . + - r t a w q"
+        "keys: spc . + - r t a w s p q"
     } else {
         "Ctrl-C to quit"
     };
@@ -134,13 +137,11 @@ fn write_header<W: Write>(
         if opts.age_heat {
             write!(out, "  maxage \x1b[31m{}\x1b[0m", grid.max_age())?;
         }
+        if !opts.sparkline.is_empty() {
+            write!(out, "  {}", opts.sparkline)?;
+        }
         if !opts.status_extra.is_empty() {
-            write!(
-                out,
-                "  {}{}\x1b[0m",
-                theme.title_ansi(),
-                opts.status_extra
-            )?;
+            write!(out, "  {}{}\x1b[0m", theme.title_ansi(), opts.status_extra)?;
         }
         write!(out, "  ({quit_hint})\x1b[K\n")?;
     } else {
@@ -155,12 +156,42 @@ fn write_header<W: Write>(
         if opts.age_heat {
             write!(out, "  maxage {}", grid.max_age())?;
         }
+        if !opts.sparkline.is_empty() {
+            write!(out, "  {}", opts.sparkline)?;
+        }
         if !opts.status_extra.is_empty() {
             write!(out, "  {}", opts.status_extra)?;
         }
         write!(out, "  ({quit_hint})\x1b[K\n")?;
     }
     Ok(())
+}
+
+/// True when the grid uses multi-state rendering (firing bright / refractory dim).
+#[inline]
+fn multistate(grid: &Grid) -> bool {
+    grid.states > 2
+}
+
+/// Choose ANSI open for a multi-state cell (firing bright, refractory dim).
+fn multistate_ansi(theme: Theme, cell: u8) -> String {
+    match cell {
+        state::LIVE => theme.live_ansi(),
+        state::REFRACTORY => format!("\x1b[2;{}m", theme.live_sgr), // dim
+        _ => String::new(),
+    }
+}
+
+/// RGB for multi-state PPM.
+fn multistate_rgb(theme: Theme, cell: u8) -> (u8, u8, u8) {
+    match cell {
+        state::LIVE => theme.live_rgb,
+        state::REFRACTORY => {
+            let (r, g, b) = theme.live_rgb;
+            (r / 3, g / 3, b / 3)
+        }
+        _ => theme.dead_rgb,
+    }
 }
 
 fn write_age_fg<W: Write>(out: &mut W, theme: Theme, age: u16) -> io::Result<()> {
@@ -170,11 +201,25 @@ fn write_age_fg<W: Write>(out: &mut W, theme: Theme, age: u16) -> io::Result<()>
 
 fn render_block<W: Write>(grid: &Grid, opts: &RenderOpts, out: &mut W) -> io::Result<()> {
     let live_open = opts.theme.live_ansi();
+    let ms = multistate(grid);
     for y in 0..grid.h {
-        if opts.age_heat && opts.color {
+        if ms && opts.color {
             for x in 0..grid.w {
                 let i = grid.idx(x, y);
-                if grid.cells[i] {
+                let c = grid.cells[i];
+                if c != 0 {
+                    let open = multistate_ansi(opts.theme, c);
+                    out.write_all(open.as_bytes())?;
+                    out.write_all("██".as_bytes())?;
+                    out.write_all(b"\x1b[0m")?;
+                } else {
+                    out.write_all(b"  ")?;
+                }
+            }
+        } else if opts.age_heat && opts.color {
+            for x in 0..grid.w {
+                let i = grid.idx(x, y);
+                if grid.cells[i] != 0 {
                     write_age_fg(out, opts.theme, grid.ages[i])?;
                     out.write_all("██".as_bytes())?;
                     out.write_all(b"\x1b[0m")?;
@@ -185,7 +230,7 @@ fn render_block<W: Write>(grid: &Grid, opts: &RenderOpts, out: &mut W) -> io::Re
         } else {
             let mut run_alive = false;
             for x in 0..grid.w {
-                let alive = grid.cells[grid.idx(x, y)];
+                let alive = grid.cells[grid.idx(x, y)] != 0;
                 if opts.color {
                     if alive && !run_alive {
                         out.write_all(live_open.as_bytes())?;
@@ -208,11 +253,27 @@ fn render_block<W: Write>(grid: &Grid, opts: &RenderOpts, out: &mut W) -> io::Re
 
 fn render_dots<W: Write>(grid: &Grid, opts: &RenderOpts, out: &mut W) -> io::Result<()> {
     let live_open = opts.theme.live_ansi();
+    let ms = multistate(grid);
     for y in 0..grid.h {
-        if opts.age_heat && opts.color {
+        if ms && opts.color {
             for x in 0..grid.w {
                 let i = grid.idx(x, y);
-                if grid.cells[i] {
+                let c = grid.cells[i];
+                if c != 0 {
+                    let open = multistate_ansi(opts.theme, c);
+                    out.write_all(open.as_bytes())?;
+                    // firing = · , refractory = °
+                    let glyph = if c == state::REFRACTORY { "°" } else { "·" };
+                    out.write_all(glyph.as_bytes())?;
+                    out.write_all(b"\x1b[0m")?;
+                } else {
+                    out.write_all(b" ")?;
+                }
+            }
+        } else if opts.age_heat && opts.color {
+            for x in 0..grid.w {
+                let i = grid.idx(x, y);
+                if grid.cells[i] != 0 {
                     write_age_fg(out, opts.theme, grid.ages[i])?;
                     out.write_all("·".as_bytes())?;
                     out.write_all(b"\x1b[0m")?;
@@ -223,7 +284,7 @@ fn render_dots<W: Write>(grid: &Grid, opts: &RenderOpts, out: &mut W) -> io::Res
         } else {
             let mut run_alive = false;
             for x in 0..grid.w {
-                let alive = grid.cells[grid.idx(x, y)];
+                let alive = grid.cells[grid.idx(x, y)] != 0;
                 if opts.color {
                     if alive && !run_alive {
                         out.write_all(live_open.as_bytes())?;
@@ -262,22 +323,30 @@ fn render_braille<W: Write>(grid: &Grid, opts: &RenderOpts, out: &mut W) -> io::
             let mut bits: u32 = 0;
             let mut max_age = 0u16;
             let mut any = false;
+            let mut max_state = 0u8;
             for dy in 0..4 {
                 for dx in 0..2 {
                     let x = bc * 2 + dx;
                     let y = br * 4 + dy;
                     if x < grid.w && y < grid.h {
                         let i = grid.idx(x, y);
-                        if grid.cells[i] {
+                        if grid.cells[i] != 0 {
                             bits |= 1u32 << DOT_MAP[dy][dx];
                             any = true;
                             max_age = max_age.max(grid.ages[i]);
+                            // prefer firing (1) over refractory for colour
+                            if grid.cells[i] == state::LIVE || max_state == 0 {
+                                max_state = grid.cells[i];
+                            }
                         }
                     }
                 }
             }
             if opts.color {
-                if any && opts.age_heat {
+                if any && multistate(grid) {
+                    let open = multistate_ansi(opts.theme, max_state);
+                    out.write_all(open.as_bytes())?;
+                } else if any && opts.age_heat {
                     write_age_fg(out, opts.theme, max_age)?;
                 } else if any {
                     out.write_all(live_open.as_bytes())?;
@@ -304,12 +373,7 @@ fn render_braille<W: Write>(grid: &Grid, opts: &RenderOpts, out: &mut W) -> io::
 ///
 /// Each cell is a single pixel. Live cells use age heat-map RGB when `age_heat`
 /// is true, otherwise the theme's solid live colour.
-pub fn export_ppm(
-    grid: &Grid,
-    path: &Path,
-    theme: Theme,
-    age_heat: bool,
-) -> Result<(), String> {
+pub fn export_ppm(grid: &Grid, path: &Path, theme: Theme, age_heat: bool) -> Result<(), String> {
     let f = File::create(path).map_err(|e| format!("export-ppm {}: {e}", path.display()))?;
     let mut w = BufWriter::new(f);
     write_ppm_p6(grid, theme, age_heat, &mut w)
@@ -329,7 +393,10 @@ pub fn write_ppm_p6<W: Write>(
     for y in 0..grid.h {
         for x in 0..grid.w {
             let i = grid.idx(x, y);
-            let (r, g, b) = if grid.cells[i] {
+            let cell = grid.cells[i];
+            let (r, g, b) = if multistate(grid) && cell != 0 {
+                multistate_rgb(theme, cell)
+            } else if cell != 0 {
                 if age_heat {
                     theme.age_rgb(grid.ages[i])
                 } else {
@@ -358,7 +425,10 @@ pub fn write_ppm_p3<W: Write>(
     for y in 0..grid.h {
         for x in 0..grid.w {
             let i = grid.idx(x, y);
-            let (r, g, b) = if grid.cells[i] {
+            let cell = grid.cells[i];
+            let (r, g, b) = if multistate(grid) && cell != 0 {
+                multistate_rgb(theme, cell)
+            } else if cell != 0 {
                 if age_heat {
                     theme.age_rgb(grid.ages[i])
                 } else {
@@ -404,9 +474,7 @@ mod tests {
         render_braille(&g, &opts, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
-            s.contains('\u{2800}')
-                || s.chars()
-                    .any(|c| ('\u{2801}'..='\u{28FF}').contains(&c))
+            s.contains('\u{2800}') || s.chars().any(|c| ('\u{2801}'..='\u{28FF}').contains(&c))
         );
     }
 

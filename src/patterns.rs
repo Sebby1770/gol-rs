@@ -13,6 +13,13 @@ pub const PATTERN_NAMES: &[&str] = &[
     "beacon",
     "block",
     "beehive",
+    "boat",
+    "loaf",
+    "pond",
+    "barge",
+    "bipole",
+    "clock",
+    "queenbee",
     "lwss",
     "mwss",
     "hwss",
@@ -37,6 +44,13 @@ pub fn list_patterns() {
     println!("  beacon          — period-2 oscillator");
     println!("  block           — 2x2 still life");
     println!("  beehive         — still life");
+    println!("  boat            — still life");
+    println!("  loaf            — still life");
+    println!("  pond            — still life");
+    println!("  barge           — still life");
+    println!("  bipole          — period-2 oscillator");
+    println!("  clock           — period-2 oscillator");
+    println!("  queenbee        — queen bee shuttle (period 30)");
     println!("  lwss            — lightweight spaceship");
     println!("  mwss            — middleweight spaceship");
     println!("  hwss            — heavyweight spaceship");
@@ -168,6 +182,61 @@ ooooooo.o
 oo.o...oo
 ";
 
+const BOAT: &str = "\
+oo.
+o.o
+.o.";
+
+const LOAF: &str = "\
+.oo.
+o..o
+.o.o
+..o.";
+
+const POND: &str = "\
+.oo.
+o..o
+o..o
+.oo.";
+
+const BARGE: &str = "\
+.o..
+o.o.
+.o.o
+..o.";
+
+/// Bipole period-2 oscillator (LifeWiki / catagolue xp2_31ago).
+const BIPOLE: &str = "\
+...oo
+..o.o
+.....
+o.o..
+oo...";
+
+const CLOCK: &str = "\
+..o.
+o.o.
+.o.o
+.o..";
+
+/// Queen bee shuttle (period-30 oscillator) — two blocks + bee engines.
+/// Abbreviated classic form fits in ~22×7.
+const QUEENBEE: &str = "\
+.........o.........
+.......o.o.........
+......o.o..........
+oo...o..o.......oo.
+oo....o.o.......oo.
+.......o.o.........
+.........o.........";
+
+/// Optional rule string parsed from an RLE `rule =` header.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LoadInfo {
+    /// Raw rule token from the file (e.g. `B3/S23`, `BB`), if present.
+    pub rule: Option<String>,
+}
+
 /// Seed `grid` with a named built-in pattern.
 pub fn seed_pattern(
     grid: &mut Grid,
@@ -179,7 +248,7 @@ pub fn seed_pattern(
     match name.as_str() {
         "random" => {
             for c in grid.cells.iter_mut() {
-                *c = rng.next_f64() < density;
+                *c = if rng.next_f64() < density { 1 } else { 0 };
             }
             grid.sync_ages_from_cells();
         }
@@ -265,6 +334,44 @@ pub fn seed_pattern(
             let oy = grid.h.saturating_sub(2) / 2;
             place_from_str(grid, ox, oy, INFINITE1);
         }
+        "boat" => {
+            let ox = grid.w.saturating_sub(3) / 2;
+            let oy = grid.h.saturating_sub(3) / 2;
+            place_from_str(grid, ox, oy, BOAT);
+        }
+        "loaf" => {
+            let ox = grid.w.saturating_sub(4) / 2;
+            let oy = grid.h.saturating_sub(4) / 2;
+            place_from_str(grid, ox, oy, LOAF);
+        }
+        "pond" => {
+            let ox = grid.w.saturating_sub(4) / 2;
+            let oy = grid.h.saturating_sub(4) / 2;
+            place_from_str(grid, ox, oy, POND);
+        }
+        "barge" => {
+            let ox = grid.w.saturating_sub(4) / 2;
+            let oy = grid.h.saturating_sub(4) / 2;
+            place_from_str(grid, ox, oy, BARGE);
+        }
+        "bipole" => {
+            let ox = grid.w.saturating_sub(5) / 2;
+            let oy = grid.h.saturating_sub(5) / 2;
+            place_from_str(grid, ox, oy, BIPOLE);
+        }
+        "clock" => {
+            let ox = grid.w.saturating_sub(4) / 2;
+            let oy = grid.h.saturating_sub(4) / 2;
+            place_from_str(grid, ox, oy, CLOCK);
+        }
+        "queenbee" | "queen-bee" | "queenbeeshuttle" | "qbs" => {
+            if grid.w < 22 || grid.h < 9 {
+                return Err("queenbee needs at least a 22x9 grid".into());
+            }
+            let ox = grid.w.saturating_sub(22) / 2;
+            let oy = grid.h.saturating_sub(7) / 2;
+            place_from_str(grid, ox, oy, QUEENBEE);
+        }
         other => {
             let known = PATTERN_NAMES.join(", ");
             return Err(format!("unknown pattern: {other} (try: {known})"));
@@ -278,17 +385,20 @@ pub fn seed_pattern(
 // ---------------------------------------------------------------------------
 
 /// Load a pattern from RLE or Life 1.05 plain text into `grid`, centered when possible.
-pub fn load_file(grid: &mut Grid, path: &Path) -> Result<(), String> {
+pub fn load_file(grid: &mut Grid, path: &Path) -> Result<LoadInfo, String> {
     let text = fs::read_to_string(path).map_err(|e| format!("load {}: {e}", path.display()))?;
     load_rle_into(grid, &text)
 }
 
 /// Parse RLE / Life 1.05 content and place cells into `grid`.
-pub fn load_rle_into(grid: &mut Grid, text: &str) -> Result<(), String> {
+///
+/// Returns [`LoadInfo`] with an optional `rule` string from the RLE header.
+pub fn load_rle_into(grid: &mut Grid, text: &str) -> Result<LoadInfo, String> {
     let trimmed = text.trim_start();
     // Life 1.05 / plain: lines of . and O/*/# (or #P header)
     if looks_like_plain(trimmed) {
-        return load_plain_into(grid, text);
+        load_plain_into(grid, text)?;
+        return Ok(LoadInfo::default());
     }
     load_rle_body(grid, text)
 }
@@ -361,16 +471,8 @@ fn load_plain_into(grid: &mut Grid, text: &str) -> Result<(), String> {
     // If no #P, center on grid.
     let (base_x, base_y) = if saw_p {
         (
-            if ox < 0 {
-                grid.w as i64 + ox
-            } else {
-                ox
-            },
-            if oy < 0 {
-                grid.h as i64 + oy
-            } else {
-                oy
-            },
+            if ox < 0 { grid.w as i64 + ox } else { ox },
+            if oy < 0 { grid.h as i64 + oy } else { oy },
         )
     } else {
         (
@@ -393,9 +495,10 @@ fn load_plain_into(grid: &mut Grid, text: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn load_rle_body(grid: &mut Grid, text: &str) -> Result<(), String> {
+fn load_rle_body(grid: &mut Grid, text: &str) -> Result<LoadInfo, String> {
     let mut width: Option<usize> = None;
     let mut height: Option<usize> = None;
+    let mut rule: Option<String> = None;
     let mut body = String::new();
 
     for line in text.lines() {
@@ -407,30 +510,53 @@ fn load_rle_body(grid: &mut Grid, text: &str) -> Result<(), String> {
             // x = W, y = H, rule = B3/S23
             for part in t.split(',') {
                 let part = part.trim();
+                let lower = part.to_ascii_lowercase();
                 if let Some(v) = part
-                    .strip_prefix("x")
-                    .or_else(|| part.strip_prefix("X"))
+                    .strip_prefix('x')
+                    .or_else(|| part.strip_prefix('X'))
                     .map(|s| s.trim())
                     .and_then(|s| s.strip_prefix('='))
                     .map(|s| s.trim())
                 {
-                    width = v
-                        .split_whitespace()
-                        .next()
-                        .and_then(|s| s.parse().ok())
-                        .or(width);
-                } else if let Some(v) = part
-                    .strip_prefix("y")
-                    .or_else(|| part.strip_prefix("Y"))
+                    // avoid matching "rule" if it somehow starts oddly — x is single letter
+                    if !lower.starts_with("rule") {
+                        width = v
+                            .split_whitespace()
+                            .next()
+                            .and_then(|s| s.parse().ok())
+                            .or(width);
+                    }
+                }
+                if let Some(v) = part
+                    .strip_prefix('y')
+                    .or_else(|| part.strip_prefix('Y'))
                     .map(|s| s.trim())
                     .and_then(|s| s.strip_prefix('='))
                     .map(|s| s.trim())
                 {
-                    height = v
-                        .split_whitespace()
-                        .next()
-                        .and_then(|s| s.parse().ok())
-                        .or(height);
+                    if !lower.starts_with("rule") {
+                        height = v
+                            .split_whitespace()
+                            .next()
+                            .and_then(|s| s.parse().ok())
+                            .or(height);
+                    }
+                }
+                // rule = ...
+                if let Some(rest) = lower.strip_prefix("rule") {
+                    let rest = rest.trim();
+                    if let Some(v) = rest.strip_prefix('=') {
+                        let raw = v.trim();
+                        // preserve original casing from part after '='
+                        if let Some((_, orig)) = part.split_once('=') {
+                            let r = orig.trim();
+                            if !r.is_empty() {
+                                rule = Some(r.to_string());
+                            }
+                        } else if !raw.is_empty() {
+                            rule = Some(raw.to_string());
+                        }
+                    }
                 }
             }
             continue;
@@ -440,7 +566,8 @@ fn load_rle_body(grid: &mut Grid, text: &str) -> Result<(), String> {
 
     if body.is_empty() {
         // Maybe plain cells without header — try plain
-        return load_plain_into(grid, text);
+        load_plain_into(grid, text)?;
+        return Ok(LoadInfo { rule });
     }
 
     let (pw, ph, cells) = decode_rle(&body)?;
@@ -465,7 +592,7 @@ fn load_rle_body(grid: &mut Grid, text: &str) -> Result<(), String> {
             }
         }
     }
-    Ok(())
+    Ok(LoadInfo { rule })
 }
 
 /// Decode RLE body (run counts + b/o/$/!) into a dense bool grid.
@@ -547,19 +674,30 @@ fn decode_rle(body: &str) -> Result<(usize, usize, Vec<bool>), String> {
 }
 
 /// Encode live cells of `grid` as a Life RLE string (trimmed bounding box).
+///
+/// Uses Conway `B3/S23` in the header. Prefer [`to_rle_with_rule`] when the
+/// simulation rule is known.
 pub fn to_rle(grid: &Grid, name: &str) -> String {
+    to_rle_with_rule(grid, name, "B3/S23")
+}
+
+/// Encode live cells with an explicit `rule =` header string.
+pub fn to_rle_with_rule(grid: &Grid, name: &str, rule: &str) -> String {
     let mut out = String::new();
     out.push_str(&format!("#N {name}\n"));
     out.push_str("#O gol-rs\n");
+    out.push_str("#C generated by gol-rs\n");
+
+    let rule = if rule.is_empty() { "B3/S23" } else { rule };
 
     let Some((min_x, min_y, max_x, max_y)) = grid.live_bounds() else {
-        out.push_str("x = 0, y = 0, rule = B3/S23\n!\n");
+        out.push_str(&format!("x = 0, y = 0, rule = {rule}\n!\n"));
         return out;
     };
 
     let w = max_x - min_x + 1;
     let h = max_y - min_y + 1;
-    out.push_str(&format!("x = {w}, y = {h}, rule = B3/S23\n"));
+    out.push_str(&format!("x = {w}, y = {h}, rule = {rule}\n"));
 
     let mut body = String::new();
     for y in min_y..=max_y {
@@ -576,13 +714,6 @@ pub fn to_rle(grid: &Grid, name: &str) -> String {
             body.push(if alive { 'o' } else { 'b' });
             x += run;
         }
-        // trim trailing dead runs on the line
-        while body.ends_with('b') {
-            body.pop();
-        }
-        // also strip trailing count digits before b we may have over-trimmed...
-        // simpler: rebuild line without trailing b's — already done by not writing trailing dead?
-        // We may have written "3b" at end — strip trailing dead run fully:
         strip_trailing_dead_run(&mut body);
         if y < max_y {
             body.push('$');
@@ -620,19 +751,29 @@ fn strip_trailing_dead_run(s: &mut String) {
     }
 }
 
-/// Save grid as RLE to `path`.
+/// Save grid as RLE to `path` (Conway header).
 pub fn save_file(grid: &Grid, path: &Path) -> Result<(), String> {
+    save_file_with_rule(grid, path, "B3/S23")
+}
+
+/// Save grid as RLE with explicit rule string in the header.
+pub fn save_file_with_rule(grid: &Grid, path: &Path, rule: &str) -> Result<(), String> {
     let name = path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("pattern");
-    let rle = to_rle(grid, name);
+    let rle = to_rle_with_rule(grid, name, rule);
     fs::write(path, rle).map_err(|e| format!("save {}: {e}", path.display()))
 }
 
 /// Dump grid as RLE string (for --dump rle).
 pub fn dump_rle(grid: &Grid) -> String {
     to_rle(grid, "dump")
+}
+
+/// Dump grid as RLE with rule header.
+pub fn dump_rle_with_rule(grid: &Grid, rule: &str) -> String {
+    to_rle_with_rule(grid, "dump", rule)
 }
 
 /// Dump grid as ASCII `.` / `O` (for --dump ascii).
@@ -678,6 +819,13 @@ mod tests {
             "pentadecathlon",
             "glider-pair",
             "infinite1",
+            "boat",
+            "loaf",
+            "pond",
+            "barge",
+            "bipole",
+            "clock",
+            "queenbee",
         ] {
             assert!(joined.contains(name), "missing {name}");
         }
@@ -770,6 +918,8 @@ mod tests {
         let rle = to_rle(&g, "glider");
         assert!(rle.contains("x ="));
         assert!(rle.contains('o'));
+        assert!(rle.contains("#C generated by gol-rs"));
+        assert!(rle.contains("rule = B3/S23"));
 
         let mut g2 = Grid::new(20, 20);
         load_rle_into(&mut g2, &rle).unwrap();
@@ -783,10 +933,26 @@ mod tests {
     }
 
     #[test]
+    fn rle_roundtrip_with_rule_header() {
+        let mut g = Grid::new(20, 20);
+        let mut rng = Rng::new(1);
+        seed_pattern(&mut g, "blinker", &mut rng, 0.0).unwrap();
+        let rle = to_rle_with_rule(&g, "blinker", "B36/S23");
+        assert!(rle.contains("rule = B36/S23"));
+        assert!(rle.contains("#C generated by gol-rs"));
+
+        let mut g2 = Grid::new(20, 20);
+        let info = load_rle_into(&mut g2, &rle).unwrap();
+        assert_eq!(info.rule.as_deref(), Some("B36/S23"));
+        assert_eq!(g.population(), g2.population());
+    }
+
+    #[test]
     fn rle_blinker_decode() {
         let rle = "#N blinker\nx = 3, y = 1, rule = B3/S23\n3o!\n";
         let mut g = Grid::new(9, 9);
-        load_rle_into(&mut g, rle).unwrap();
+        let info = load_rle_into(&mut g, rle).unwrap();
+        assert_eq!(info.rule.as_deref(), Some("B3/S23"));
         assert_eq!(g.population(), 3);
         let before = g.cells.clone();
         g.step();
@@ -805,5 +971,62 @@ mod tests {
         let before = g.clone();
         g.step();
         assert_eq!(g, before);
+    }
+
+    #[test]
+    fn boat_loaf_pond_still() {
+        let mut rng = Rng::new(1);
+        for name in ["boat", "loaf", "pond", "barge"] {
+            let mut g = Grid::new(12, 12);
+            seed_pattern(&mut g, name, &mut rng, 0.0).unwrap();
+            assert!(g.population() > 0, "{name}");
+            let before = g.clone();
+            g.step();
+            assert_eq!(g, before, "{name} should be still life");
+        }
+    }
+
+    #[test]
+    fn clock_period_2() {
+        let mut g = Grid::new(10, 10);
+        let mut rng = Rng::new(1);
+        seed_pattern(&mut g, "clock", &mut rng, 0.0).unwrap();
+        let gen0 = g.cells.clone();
+        g.step();
+        assert_ne!(g.cells, gen0);
+        g.step();
+        assert_eq!(g.cells, gen0);
+    }
+
+    #[test]
+    fn bipole_period_2() {
+        // LifeWiki RLE: 3b2o$2bobo2$obo$2o!
+        let rle = "x = 5, y = 5, rule = B3/S23\n3b2o$2bobo2$obo$2o!\n";
+        let mut g = Grid::new(16, 16);
+        load_rle_into(&mut g, rle).unwrap();
+        assert_eq!(g.population(), 8);
+        let gen0 = g.cells.clone();
+        g.step();
+        assert_ne!(g.cells, gen0);
+        g.step();
+        assert_eq!(g.cells, gen0);
+
+        let mut g2 = Grid::new(16, 16);
+        let mut rng = Rng::new(1);
+        seed_pattern(&mut g2, "bipole", &mut rng, 0.0).unwrap();
+        assert_eq!(g2.population(), 8);
+        let gen0 = g2.cells.clone();
+        g2.step();
+        assert_ne!(g2.cells, gen0);
+        g2.step();
+        assert_eq!(g2.cells, gen0);
+    }
+
+    #[test]
+    fn queenbee_seeds() {
+        let mut g = Grid::new(30, 16);
+        let mut rng = Rng::new(1);
+        seed_pattern(&mut g, "queenbee", &mut rng, 0.0).unwrap();
+        assert!(g.population() > 10);
     }
 }

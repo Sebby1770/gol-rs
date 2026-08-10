@@ -131,7 +131,11 @@ impl Rule {
 
     /// Canonical B#/S# string.
     pub fn to_string_bs(&self) -> String {
-        format!("B{}/S{}", mask_to_digits(self.birth), mask_to_digits(self.survive))
+        format!(
+            "B{}/S{}",
+            mask_to_digits(self.birth),
+            mask_to_digits(self.survive)
+        )
     }
 
     /// Human-readable name if this is a known preset, else B/S string.
@@ -162,6 +166,70 @@ impl Default for Rule {
     }
 }
 
+/// Top-level automaton selection: binary Life-like or multi-state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaRule {
+    /// Binary birth/survive Life-like rule.
+    LifeLike(Rule),
+    /// Brian's Brain: 0=dead, 1=firing, 2=refractory.
+    BriansBrain,
+}
+
+impl CaRule {
+    /// Parse Life-like notation, named preset, or multi-state name.
+    ///
+    /// Multi-state: `brian`, `brains`, `brians-brain`, `bb`.
+    pub fn parse(s: &str) -> Result<Self, String> {
+        let t = s.trim().to_ascii_lowercase();
+        match t.as_str() {
+            "brian" | "brains" | "brians-brain" | "brian's-brain" | "briansbrain" | "bb" => {
+                Ok(Self::BriansBrain)
+            }
+            _ => Ok(Self::LifeLike(Rule::parse(s)?)),
+        }
+    }
+
+    pub fn is_multistate(self) -> bool {
+        matches!(self, Self::BriansBrain)
+    }
+
+    /// Max cell states used by this rule (2 binary, 3 Brian's Brain).
+    pub fn states(self) -> u8 {
+        match self {
+            Self::LifeLike(_) => 2,
+            Self::BriansBrain => 3,
+        }
+    }
+
+    pub fn as_life_like(self) -> Option<Rule> {
+        match self {
+            Self::LifeLike(r) => Some(r),
+            Self::BriansBrain => None,
+        }
+    }
+
+    /// Canonical string for RLE `rule =` headers and status lines.
+    pub fn to_string_bs(self) -> String {
+        match self {
+            Self::LifeLike(r) => r.to_string_bs(),
+            Self::BriansBrain => "BB".into(),
+        }
+    }
+
+    pub fn display_name(self) -> String {
+        match self {
+            Self::LifeLike(r) => r.display_name(),
+            Self::BriansBrain => "brian (Brian's Brain)".into(),
+        }
+    }
+}
+
+impl Default for CaRule {
+    fn default() -> Self {
+        Self::LifeLike(Rule::CONWAY)
+    }
+}
+
 /// Print built-in rule presets.
 pub fn list_rules() {
     println!("Built-in rules (Life-like):");
@@ -172,6 +240,9 @@ pub fn list_rules() {
     println!("  life-without-death  — B3/S012345678   (alias: lwd)");
     println!("  maze                — B3/S12345");
     println!("  replicator          — B1357/S1357");
+    println!();
+    println!("Multi-state:");
+    println!("  brian / brains      — Brian's Brain (0=dead, 1=firing, 2=refractory)");
     println!();
     println!("Custom notation:");
     println!("  B3/S23              — birth/survive form");
@@ -327,5 +398,19 @@ mod tests {
     #[test]
     fn default_is_conway() {
         assert_eq!(Rule::default(), Rule::CONWAY);
+    }
+
+    #[test]
+    fn parse_brians_brain() {
+        assert_eq!(CaRule::parse("brian").unwrap(), CaRule::BriansBrain);
+        assert_eq!(CaRule::parse("brains").unwrap(), CaRule::BriansBrain);
+        assert_eq!(CaRule::parse("BB").unwrap(), CaRule::BriansBrain);
+        assert!(CaRule::parse("brian").unwrap().is_multistate());
+        assert_eq!(CaRule::parse("brian").unwrap().states(), 3);
+        assert_eq!(
+            CaRule::parse("conway").unwrap(),
+            CaRule::LifeLike(Rule::CONWAY)
+        );
+        assert!(!CaRule::parse("conway").unwrap().is_multistate());
     }
 }

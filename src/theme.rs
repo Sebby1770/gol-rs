@@ -24,10 +24,10 @@ pub const THEME_NAMES: &[&str] = &["classic", "neon", "fire", "ocean", "mono"];
 impl Theme {
     pub const CLASSIC: Theme = Theme {
         name: "classic",
-        live_sgr: 32,  // green
-        title_sgr: 36, // cyan
+        live_sgr: 32,   // green
+        title_sgr: 36,  // cyan
         accent_sgr: 33, // yellow
-        pop_sgr: 35,   // magenta
+        pop_sgr: 35,    // magenta
         live_rgb: (0, 220, 80),
         dead_rgb: (0, 0, 0),
     };

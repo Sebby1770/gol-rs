@@ -179,10 +179,7 @@ impl RawMode {
         {
             let fd = io::stdin().as_raw_fd();
             if unsafe { sys::isatty(fd) } != 1 {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "stdin is not a TTY",
-                ));
+                return Err(io::Error::new(io::ErrorKind::Other, "stdin is not a TTY"));
             }
 
             let mut original = unsafe { std::mem::zeroed::<sys::Termios>() };
@@ -246,14 +243,16 @@ impl Drop for RawMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
     Space,
-    Step,     // '.'
-    Faster,   // '+' or '='
-    Slower,   // '-'
-    Quit,     // 'q' or 'Q'
-    Reseed,   // 'r' or 'R'
-    Theme,    // 't' or 'T' — cycle colour theme
-    Age,      // 'a' or 'A' — toggle age heat-map
-    Wrap,     // 'w' or 'W' — toggle toroidal wrap
+    Step,      // '.'
+    Faster,    // '+' or '='
+    Slower,    // '-'
+    Quit,      // 'q' or 'Q'
+    Reseed,    // 'r' or 'R'
+    Theme,     // 't' or 'T' — cycle colour theme
+    Age,       // 'a' or 'A' — toggle age heat-map
+    Wrap,      // 'w' or 'W' — toggle toroidal wrap
+    Save,      // 's' or 'S' — save snapshot.rle
+    Sparkline, // 'p' or 'P' — print population sparkline
     Other(u8),
 }
 
@@ -269,6 +268,8 @@ impl Key {
             b't' | b'T' => Key::Theme,
             b'a' | b'A' => Key::Age,
             b'w' | b'W' => Key::Wrap,
+            b's' | b'S' => Key::Save,
+            b'p' | b'P' => Key::Sparkline,
             other => Key::Other(other),
         }
     }
@@ -334,6 +335,8 @@ mod tests {
         assert_eq!(Key::from_byte(b't'), Key::Theme);
         assert_eq!(Key::from_byte(b'a'), Key::Age);
         assert_eq!(Key::from_byte(b'w'), Key::Wrap);
+        assert_eq!(Key::from_byte(b's'), Key::Save);
+        assert_eq!(Key::from_byte(b'p'), Key::Sparkline);
         assert_eq!(Key::from_byte(b'x'), Key::Other(b'x'));
     }
 }

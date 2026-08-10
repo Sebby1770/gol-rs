@@ -5,7 +5,7 @@ use std::collections::HashMap;
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x100_0000_01b3;
 
-/// Hash grid cell state (alive/dead only) with FNV-1a over the bool packing.
+/// Hash grid cell states with FNV-1a (supports multi-state `u8` cells).
 pub fn hash_grid(grid: &Grid) -> u64 {
     let mut h = FNV_OFFSET;
     // Mix dimensions so differently-sized empty grids differ.
@@ -13,22 +13,29 @@ pub fn hash_grid(grid: &Grid) -> u64 {
     h = fnv_byte(h, (grid.w >> 8) as u8);
     h = fnv_byte(h, grid.h as u8);
     h = fnv_byte(h, (grid.h >> 8) as u8);
-    // Pack 8 cells per byte for speed.
-    let mut acc = 0u8;
-    let mut bit = 0u8;
-    for &alive in &grid.cells {
-        if alive {
-            acc |= 1 << bit;
+    h = fnv_byte(h, grid.states);
+    // For binary grids pack 8 cells/bit; multi-state hashes raw u8 values.
+    if grid.states <= 2 {
+        let mut acc = 0u8;
+        let mut bit = 0u8;
+        for &cell in &grid.cells {
+            if cell != 0 {
+                acc |= 1 << bit;
+            }
+            bit += 1;
+            if bit == 8 {
+                h = fnv_byte(h, acc);
+                acc = 0;
+                bit = 0;
+            }
         }
-        bit += 1;
-        if bit == 8 {
+        if bit != 0 {
             h = fnv_byte(h, acc);
-            acc = 0;
-            bit = 0;
         }
-    }
-    if bit != 0 {
-        h = fnv_byte(h, acc);
+    } else {
+        for &cell in &grid.cells {
+            h = fnv_byte(h, cell);
+        }
     }
     h
 }
