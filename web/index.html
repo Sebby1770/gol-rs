@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="gol-rs lab: Conway, HighLife, Brian's Brain and more in the browser. Same engine as the Rust CLI."
+    />
+    <meta name="theme-color" content="#07080c" />
+    <meta property="og:title" content="gol-rs lab" />
+    <meta
+      property="og:description"
+      content="Cellular automata in the browser — Conway, HighLife, Brian's Brain, RLE, themes."
+    />
+    <title>gol-rs lab</title>
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="static/styles.css" />
+    <script type="module" src="static/app.js"></script>
+  </head>
+  <body>
+    <a class="skip" href="#stage">Skip to grid</a>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Rust engine, browser lab</p>
+        <h1>gol-rs</h1>
+      </div>
+      <div class="hud">
+        <span id="ruleChip">conway (B3/S23)</span>
+        <span id="statsChip">gen 0 · pop 0</span>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section class="stage-wrap">
+        <canvas id="stage" width="960" height="540" aria-label="Cellular automaton grid"></canvas>
+        <canvas id="spark" width="960" height="56" aria-label="Population sparkline"></canvas>
+      </section>
+
+      <aside class="panel">
+        <div class="row">
+          <button id="play" class="primary" type="button">Pause</button>
+          <button id="step" type="button">Step</button>
+          <button id="reseed" type="button">Reseed</button>
+        </div>
+        <label>Pattern
+          <select id="pattern"></select>
+        </label>
+        <label>Rule
+          <select id="rule"></select>
+        </label>
+        <label>Theme
+          <select id="theme">
+            <option>classic</option>
+            <option>neon</option>
+            <option>fire</option>
+            <option>ocean</option>
+            <option>mono</option>
+          </select>
+        </label>
+        <label>Speed <input id="speed" type="range" min="15" max="240" value="80" />
+          <output id="speedOut">80 ms</output>
+        </label>
+        <label>Width <input id="width" type="range" min="40" max="220" value="120" />
+          <output id="widthOut">120</output>
+        </label>
+        <label>Height <input id="height" type="range" min="24" max="140" value="70" />
+          <output id="heightOut">70</output>
+        </label>
+        <label class="toggle"><input id="wrap" type="checkbox" checked /> Wrap edges</label>
+        <label class="toggle"><input id="age" type="checkbox" /> Age heat-map</label>
+        <p class="hint" id="hint">Click-drag to draw. Shift-drag erases. Space pause, . step, t theme, r reseed.</p>
+        <div class="row">
+          <button id="copyRle" type="button">Copy RLE</button>
+          <button id="share" type="button">Copy link</button>
+        </div>
+        <label>Paste RLE
+          <textarea id="rle" rows="5" placeholder="x = 3, y = 1, rule = B3/S23&#10;3o!"></textarea>
+        </label>
+        <button id="loadRle" type="button">Load RLE</button>
+        <p class="status" id="status" role="status"></p>
+        <p class="foot">
+          CLI still lives in Rust.
+          <a href="https://github.com/Sebby1770/gol-rs">Source</a>
+        </p>
+      </aside>
+    </main>
+  </body>
+</html>

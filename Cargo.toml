@@ -1,8 +1,8 @@
 [package]
 name = "gol-rs"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
-description = "Life-like & multi-state cellular automata in your terminal (Conway, Brian's Brain, …)"
+description = "Life-like & multi-state cellular automata — Rust CLI plus a browser lab"
 license = "MIT"
 repository = "https://github.com/Sebby1770/gol-rs"
 readme = "README.md"

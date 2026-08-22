@@ -27,3 +27,10 @@ jobs:
 
       - name: cargo build --release
         run: cargo build --release --verbose
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: JavaScript engine tests
+        run: npm run test:js

@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.6.0] — 2026-08-22
+
+### Added
+- **Browser lab** under `web/`: canvas simulation of the same rules, patterns, RLE, themes, age heat-map, wrap, cycle detection, and share URLs.
+- GitHub Pages workflow publishing `web/`.
+- JavaScript engine tests (`npm run test:js`) covering blinker period 2, still lifes, HighLife, Brian's Brain parse, and RLE.
+
+### Changed
+- Version bump to **0.6.0**. The Rust CLI is unchanged in behaviour; the website is the new front door.
+
 ## [0.5.0] — 2026-08-09
 
 ### Added

@@ -1,0 +1,9 @@
+{
+  "name": "gol-rs",
+  "version": "0.6.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:js": "node --check web/static/engine.js && node --check web/static/app.js && node --test web/engine.test.js"
+  }
+}

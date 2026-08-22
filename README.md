@@ -1,6 +1,8 @@
 # gol-rs
 
-Life-like **and multi-state** cellular automata in your terminal — pure Rust, **zero external crates**.
+Life-like **and multi-state** cellular automata — pure Rust CLI, **zero external crates**, plus a **browser lab**.
+
+Live site: [https://sebby1770.github.io/gol-rs/](https://sebby1770.github.io/gol-rs/)
 
 Default rule is Conway's Game of Life (`B3/S23`). Also ships HighLife, Seeds, Day & Night, **Brian's Brain**, and more.
 
@@ -34,6 +36,7 @@ gol-rs  gen     0  pop   384  grid 60x30  +12/-8  ▁▂▃▄▅▆▇█  (Ctr
 - **Parallel step** for large grids (≥ 20 000 cells) via `std::thread::scope`
 - Rich run stats: max/min pop, gen at peak, total births/deaths; CSV `gen,pop,births,deaths`
 - Library crate (`gol_rs`) + `gol` binary
+- **Browser lab** (`web/`) on GitHub Pages — canvas, draw, RLE, themes, Brian's Brain
 - Deterministic RNG seeding for reproducible runs
 - Pure stdlib — no crates.io dependencies (interactive mode uses thin `extern "C"` termios)
 
